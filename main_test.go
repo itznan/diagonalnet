@@ -1,0 +1,258 @@
+package main
+
+import (
+	"math"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// 1. Tensor Unit Tests
+func TestTensorIndexAndStride(t *testing.T) {
+	c, h, w := 3, 28, 28
+	tensor := NewTensor(c, h, w)
+
+	expectedLen := c * h * w
+	if len(tensor.Data) != expectedLen {
+		t.Fatalf("expected tensor length %d, got %d", expectedLen, len(tensor.Data))
+	}
+
+	targetC, targetY, targetX := 2, 4, 5
+	expectedIndex := targetC*(h*w) + targetY*w + targetX
+	val := float32(3.14)
+
+	tensor.Set(targetC, targetY, targetX, val)
+
+	if tensor.Data[expectedIndex] != val {
+		t.Fatalf("stride mismatch: expected tensor.Data[%d] == %f, got %f", expectedIndex, val, tensor.Data[expectedIndex])
+	}
+	if got := tensor.Get(targetC, targetY, targetX); got != val {
+		t.Fatalf("Get accessor mismatch: expected %f, got %f", val, got)
+	}
+	if idx := tensor.Index(targetC, targetY, targetX); idx != expectedIndex {
+		t.Fatalf("Index method mismatch: expected %d, got %d", expectedIndex, idx)
+	}
+}
+
+func TestTensorZeroAndClone(t *testing.T) {
+	tensor := NewTensor(2, 4, 4)
+	tensor.Set(1, 2, 3, 42.0)
+
+	clone := tensor.Clone()
+	if clone.Get(1, 2, 3) != 42.0 {
+		t.Fatalf("clone value mismatch: expected 42.0, got %f", clone.Get(1, 2, 3))
+	}
+
+	tensor.Zero()
+	if tensor.Get(1, 2, 3) != 0 {
+		t.Fatalf("expected 0 after Zero(), got %f", tensor.Get(1, 2, 3))
+	}
+	if clone.Get(1, 2, 3) != 42.0 {
+		t.Fatalf("clone modified after original Zero()")
+	}
+
+	ch, ht, wd := clone.Shape()
+	if ch != 2 || ht != 4 || wd != 4 {
+		t.Fatalf("expected shape (2,4,4), got (%d,%d,%d)", ch, ht, wd)
+	}
+}
+
+// 2. Parameter Unit Tests
+func TestParameterAllocationAndBuffers(t *testing.T) {
+	size := 128
+	param := NewParameter(size)
+
+	if param.Size() != size {
+		t.Fatalf("expected size %d, got %d", size, param.Size())
+	}
+	if len(param.Data) != size || len(param.Grad) != size || len(param.M) != size || len(param.V) != size {
+		t.Fatalf("buffer size mismatch")
+	}
+
+	param.Grad[0] = 5.5
+	param.ZeroGrad()
+	if param.Grad[0] != 0 {
+		t.Fatalf("expected 0 after ZeroGrad(), got %f", param.Grad[0])
+	}
+
+	param.Data[10] = 3.14
+	param.M[10] = 0.9
+	param.V[10] = 0.999
+	clone := param.Clone()
+
+	if clone.Data[10] != 3.14 || clone.M[10] != 0.9 || clone.V[10] != 0.999 {
+		t.Fatalf("clone data mismatch")
+	}
+	clone.Data[10] = 99.0
+	if param.Data[10] != 3.14 {
+		t.Fatalf("clone mutation affected original parameter")
+	}
+}
+
+func TestKaimingUniformInitialization(t *testing.T) {
+	fanIn := 100
+	size := 10000
+	param := NewParameter(size)
+	rng := rand.New(rand.NewSource(42))
+
+	InitKaimingUniform(param, fanIn, rng)
+
+	bound := float32(math.Sqrt(6.0 / float64(fanIn)))
+	var sum float64
+	for _, v := range param.Data {
+		if v < -bound || v > bound {
+			t.Fatalf("value %f out of bound [-%f, +%f]", v, bound, bound)
+		}
+		sum += float64(v)
+	}
+
+	mean := sum / float64(size)
+	if math.Abs(mean) > 0.05 {
+		t.Fatalf("expected mean near 0, got %f", mean)
+	}
+}
+
+func TestKaimingNormalInitialization(t *testing.T) {
+	fanIn := 100
+	size := 20000
+	param := NewParameter(size)
+	rng := rand.New(rand.NewSource(42))
+
+	InitKaimingNormal(param, fanIn, rng)
+
+	expectedSigma := math.Sqrt(2.0 / float64(fanIn))
+	var sum, sumSq float64
+	for _, v := range param.Data {
+		sum += float64(v)
+		sumSq += float64(v * v)
+	}
+
+	mean := sum / float64(size)
+	variance := (sumSq / float64(size)) - (mean * mean)
+	stdDev := math.Sqrt(variance)
+
+	if math.Abs(mean) > 0.02 {
+		t.Fatalf("expected mean near 0, got %f", mean)
+	}
+	if math.Abs(stdDev-expectedSigma) > 0.02 {
+		t.Fatalf("expected stdDev near %f, got %f", expectedSigma, stdDev)
+	}
+}
+
+// 3. Gradient Reduction Unit Tests
+func TestReduceParameterGradients(t *testing.T) {
+	L := 1024
+	numWorkers := 8
+
+	master := NewParameter(L)
+	workers := make([]*Parameter, numWorkers)
+	rng := rand.New(rand.NewSource(123))
+
+	for w := 0; w < numWorkers; w++ {
+		workers[w] = NewParameter(L)
+		for i := 0; i < L; i++ {
+			workers[w].Grad[i] = rng.Float32() * 10.0
+		}
+	}
+
+	expected := make([]float32, L)
+	for i := 0; i < L; i++ {
+		for w := 0; w < numWorkers; w++ {
+			expected[i] += workers[w].Grad[i]
+		}
+	}
+
+	ReduceParameterGradients(master, workers, numWorkers)
+
+	for i := 0; i < L; i++ {
+		diff := master.Grad[i] - expected[i]
+		if diff < -1e-4 || diff > 1e-4 {
+			t.Fatalf("reduction mismatch at index %d: expected %f, got %f", i, expected[i], master.Grad[i])
+		}
+	}
+}
+
+func TestReduceGradientsMultiParam(t *testing.T) {
+	numWorkers := 4
+	masterParams := []*Parameter{
+		NewParameter(100),
+		NewParameter(250),
+		NewParameter(10),
+	}
+
+	workerParams := make([][]*Parameter, numWorkers)
+	for w := 0; w < numWorkers; w++ {
+		workerParams[w] = []*Parameter{
+			NewParameter(100),
+			NewParameter(250),
+			NewParameter(10),
+		}
+		for pIdx, p := range workerParams[w] {
+			for i := range p.Grad {
+				p.Grad[i] = float32(w + pIdx + 1)
+			}
+		}
+	}
+
+	ReduceGradients(masterParams, workerParams, numWorkers)
+
+	for _, v := range masterParams[0].Grad {
+		if v != 10.0 {
+			t.Fatalf("expected 10.0 for master[0], got %f", v)
+		}
+	}
+	for _, v := range masterParams[1].Grad {
+		if v != 14.0 {
+			t.Fatalf("expected 14.0 for master[1], got %f", v)
+		}
+	}
+}
+
+// 4. Model IO Unit Tests
+func TestSaveAndLoadModelWeights(t *testing.T) {
+	tempDir := filepath.Join(os.TempDir(), "diagonnet_singlefile_test")
+	defer os.RemoveAll(tempDir)
+
+	modelPath := filepath.Join(tempDir, "weights", "model.bin")
+	classes := []string{"zero", "one", "two"}
+	p1 := NewParameter(20)
+	p2 := NewParameter(5)
+
+	for i := range p1.Data {
+		p1.Data[i] = float32(i) * 2.0
+	}
+	for i := range p2.Data {
+		p2.Data[i] = float32(i) * -1.0
+	}
+
+	if err := SaveModelWeights(modelPath, []*Parameter{p1, p2}, classes); err != nil {
+		t.Fatalf("SaveModelWeights failed: %v", err)
+	}
+
+	loadP1 := NewParameter(20)
+	loadP2 := NewParameter(5)
+	loadedClasses, err := LoadModelWeights(modelPath, []*Parameter{loadP1, loadP2})
+	if err != nil {
+		t.Fatalf("LoadModelWeights failed: %v", err)
+	}
+
+	if len(loadedClasses) != len(classes) {
+		t.Fatalf("classes length mismatch")
+	}
+	for i, c := range loadedClasses {
+		if c != classes[i] {
+			t.Fatalf("class mismatch at %d", i)
+		}
+	}
+	for i, val := range loadP1.Data {
+		if val != p1.Data[i] {
+			t.Fatalf("p1 mismatch at %d", i)
+		}
+	}
+	for i, val := range loadP2.Data {
+		if val != p2.Data[i] {
+			t.Fatalf("p2 mismatch at %d", i)
+		}
+	}
+}
