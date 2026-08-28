@@ -580,6 +580,17 @@ func (l *Conv2DLayer) OutputShape(inH, inW int) (outH, outW int) {
 	return outH, outW
 }
 
+// ZeroGrad resets weight and bias analytical gradient accumulators to zero.
+func (l *Conv2DLayer) ZeroGrad() {
+	l.Weights.ZeroGrad()
+	l.Bias.ZeroGrad()
+}
+
+// Parameters returns references to trainable parameters in the convolutional layer.
+func (l *Conv2DLayer) Parameters() []*Parameter {
+	return []*Parameter{l.Weights, l.Bias}
+}
+
 // Forward computes the parallelized multi-channel 2D convolution forward pass:
 // Y(c_out, y, x) = B(c_out) + sum_{c_in} sum_{ky} sum_{kx} W(c_out, c_in, ky, kx) * X(c_in, y*S + ky - P, x*S + kx - P)
 func (l *Conv2DLayer) Forward(input *Tensor) *Tensor {
@@ -679,6 +690,181 @@ func (l *Conv2DLayer) ForwardInto(input *Tensor, output *Tensor) {
 	}
 
 	wg.Wait()
+}
+
+// Backward computes analytical Jacobian backpropagation gradients for weights, bias, and input feature tensor:
+// 1. dL/dW(c_out, c_in, ky, kx) = sum_{y, x} dL/dY(c_out, y, x) * X(c_in, y*S + ky - P, x*S + kx - P)
+// 2. dL/dB(c_out) = sum_{y, x} dL/dY(c_out, y, x)
+// 3. dL/dX(c_in, iy, ix) = sum_{c_out, ky, kx} dL/dY(c_out, (iy+P-ky)/S, (ix+P-kx)/S) * W(c_out, c_in, ky, kx)
+func (l *Conv2DLayer) Backward(gradOutput *Tensor) *Tensor {
+	if l.LastInput == nil {
+		panic("Conv2DLayer.Backward called before Forward pass")
+	}
+	gradInput := NewTensor(l.InChannels, l.LastInput.Height, l.LastInput.Width)
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto executes multi-threaded analytical backpropagation into pre-allocated gradInput buffer.
+func (l *Conv2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
+	input := l.LastInput
+	inC, inH, inW := input.Channels, input.Height, input.Width
+	outC, outH, outW := gradOutput.Channels, gradOutput.Height, gradOutput.Width
+
+	if gradInput.Channels != inC || gradInput.Height != inH || gradInput.Width != inW {
+		*gradInput = *NewTensor(inC, inH, inW)
+	}
+	gradInput.Zero()
+
+	K := l.KernelSize
+	S := l.Stride
+	P := l.Padding
+	Ksq := K * K
+	inHW := inH * inW
+	outHW := outH * outW
+	weightsPerOutChannel := inC * Ksq
+
+	numWorkers := runtime.NumCPU()
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
+
+	// 1. Weight & Bias Gradients (Parallelized over output channels cOut for lock-free writing)
+	numWorkersW := numWorkers
+	if numWorkersW > outC {
+		numWorkersW = outC
+	}
+	channelsPerWorkerW := (outC + numWorkersW - 1) / numWorkersW
+	var wgW sync.WaitGroup
+
+	for w := 0; w < numWorkersW; w++ {
+		startC := w * channelsPerWorkerW
+		endC := startC + channelsPerWorkerW
+		if endC > outC {
+			endC = outC
+		}
+		if startC >= endC {
+			continue
+		}
+
+		wgW.Add(1)
+		go func(sC, eC int) {
+			defer wgW.Done()
+			for cOut := sC; cOut < eC; cOut++ {
+				var biasGrad float32
+				outChOffset := cOut * outHW
+				weightOutOffset := cOut * weightsPerOutChannel
+
+				for y := 0; y < outH; y++ {
+					inYBase := y*S - P
+					outYOffset := outChOffset + y*outW
+
+					for x := 0; x < outW; x++ {
+						inXBase := x*S - P
+						gy := gradOutput.Data[outYOffset+x]
+						biasGrad += gy
+
+						for cIn := 0; cIn < inC; cIn++ {
+							inChOffset := cIn * inHW
+							weightInOffset := weightOutOffset + cIn*Ksq
+
+							for ky := 0; ky < K; ky++ {
+								inY := inYBase + ky
+								if inY < 0 || inY >= inH {
+									continue
+								}
+								inRowOffset := inChOffset + inY*inW
+								weightRowOffset := weightInOffset + ky*K
+
+								for kx := 0; kx < K; kx++ {
+									inX := inXBase + kx
+									if inX < 0 || inX >= inW {
+										continue
+									}
+
+									xVal := input.Data[inRowOffset+inX]
+									l.Weights.Grad[weightRowOffset+kx] += gy * xVal
+								}
+							}
+						}
+					}
+				}
+				l.Bias.Grad[cOut] += biasGrad
+			}
+		}(startC, endC)
+	}
+	wgW.Wait()
+
+	// 2. Input Gradients (Parallelized over input channels cIn for lock-free writing)
+	numWorkersIn := numWorkers
+	if numWorkersIn > inC {
+		numWorkersIn = inC
+	}
+	channelsPerWorkerIn := (inC + numWorkersIn - 1) / numWorkersIn
+	var wgIn sync.WaitGroup
+
+	for w := 0; w < numWorkersIn; w++ {
+		startCin := w * channelsPerWorkerIn
+		endCin := startCin + channelsPerWorkerIn
+		if endCin > inC {
+			endCin = inC
+		}
+		if startCin >= endCin {
+			continue
+		}
+
+		wgIn.Add(1)
+		go func(sCin, eCin int) {
+			defer wgIn.Done()
+			for cIn := sCin; cIn < eCin; cIn++ {
+				inChOffset := cIn * inHW
+
+				for iy := 0; iy < inH; iy++ {
+					inRowOffset := inChOffset + iy*inW
+
+					for ix := 0; ix < inW; ix++ {
+						var sum float32
+
+						for cOut := 0; cOut < outC; cOut++ {
+							outChOffset := cOut * outHW
+							weightInOffset := cOut*weightsPerOutChannel + cIn*Ksq
+
+							for ky := 0; ky < K; ky++ {
+								yDiff := iy + P - ky
+								if yDiff < 0 || yDiff%S != 0 {
+									continue
+								}
+								y := yDiff / S
+								if y >= outH {
+									continue
+								}
+								outYOffset := outChOffset + y*outW
+								weightRowOffset := weightInOffset + ky*K
+
+								for kx := 0; kx < K; kx++ {
+									xDiff := ix + P - kx
+									if xDiff < 0 || xDiff%S != 0 {
+										continue
+									}
+									x := xDiff / S
+									if x >= outW {
+										continue
+									}
+
+									gy := gradOutput.Data[outYOffset+x]
+									wVal := l.Weights.Data[weightRowOffset+kx]
+									sum += gy * wVal
+								}
+							}
+						}
+
+						gradInput.Data[inRowOffset+ix] = sum
+					}
+				}
+			}
+		}(startCin, endCin)
+	}
+	wgIn.Wait()
 }
 
 // ============================================================================

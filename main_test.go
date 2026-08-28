@@ -324,33 +324,156 @@ func TestConv2DLayerForward(t *testing.T) {
 
 	conv := NewConv2DLayer(inC, outC, K, S, P, nil)
 
-	// Set weights to 1.0 and bias to 0.5
 	InitConstant(conv.Weights, 1.0)
 	InitConstant(conv.Bias, 0.5)
 
 	input := NewTensor(inC, inH, inW)
-	// Fill input with 1.0
 	for i := range input.Data {
 		input.Data[i] = 1.0
 	}
 
 	output := conv.Forward(input)
 
-	// Check output shape: with inH=5, P=1, K=3, S=1 -> (5+2-3)/1 + 1 = 5
 	c, h, w := output.Shape()
 	if c != outC || h != inH || w != inW {
 		t.Fatalf("unexpected output shape (%d, %d, %d), expected (%d, %d, %d)", c, h, w, outC, inH, inW)
 	}
 
-	// Center pixel (y=2, x=2): full 3x3 window on both channels = 2 channels * 9 pixels * 1.0 = 18.0 + bias(0.5) = 18.5
 	centerVal := output.Get(0, 2, 2)
 	if centerVal != 18.5 {
 		t.Fatalf("expected center value 18.5, got %f", centerVal)
 	}
 
-	// Corner pixel (y=0, x=0): 2x2 valid window due to padding = 2 channels * 4 pixels * 1.0 = 8.0 + bias(0.5) = 8.5
 	cornerVal := output.Get(0, 0, 0)
 	if cornerVal != 8.5 {
 		t.Fatalf("expected corner value 8.5, got %f", cornerVal)
+	}
+}
+
+func TestConv2DLayerBackwardJacobian(t *testing.T) {
+	inC, inH, inW := 2, 4, 4
+	outC := 2
+	K := 3
+	S := 1
+	P := 1
+
+	rng := rand.New(rand.NewSource(99))
+	conv := NewConv2DLayer(inC, outC, K, S, P, rng)
+
+	input := NewTensor(inC, inH, inW)
+	for i := range input.Data {
+		input.Data[i] = rng.Float32()*2.0 - 1.0
+	}
+
+	// Forward pass
+	output := conv.Forward(input)
+
+	// Target tensor for Mean Squared Error loss: L = 0.5 * sum((Y - T)^2)
+	target := NewTensor(outC, output.Height, output.Width)
+	for i := range target.Data {
+		target.Data[i] = rng.Float32()
+	}
+
+	gradOutput := NewTensor(outC, output.Height, output.Width)
+	for i := range gradOutput.Data {
+		gradOutput.Data[i] = output.Data[i] - target.Data[i]
+	}
+
+	conv.ZeroGrad()
+	gradInput := conv.Backward(gradOutput)
+
+	eps := float32(1e-3)
+
+	// 1. Verify Weight Gradients vs Numerical Gradient
+	for i := range conv.Weights.Data {
+		orig := conv.Weights.Data[i]
+
+		conv.Weights.Data[i] = orig + eps
+		outPlus := conv.Forward(input)
+		var lossPlus float32
+		for j := range outPlus.Data {
+			diff := outPlus.Data[j] - target.Data[j]
+			lossPlus += 0.5 * diff * diff
+		}
+
+		conv.Weights.Data[i] = orig - eps
+		outMinus := conv.Forward(input)
+		var lossMinus float32
+		for j := range outMinus.Data {
+			diff := outMinus.Data[j] - target.Data[j]
+			lossMinus += 0.5 * diff * diff
+		}
+
+		conv.Weights.Data[i] = orig
+
+		numGrad := (lossPlus - lossMinus) / (2.0 * eps)
+		anaGrad := conv.Weights.Grad[i]
+
+		diff := float64(math.Abs(float64(anaGrad - numGrad)))
+		if diff > 1e-2 {
+			t.Fatalf("weight gradient mismatch at %d: analytical=%f, numerical=%f, diff=%f", i, anaGrad, numGrad, diff)
+		}
+	}
+
+	// 2. Verify Bias Gradients vs Numerical Gradient
+	for i := range conv.Bias.Data {
+		orig := conv.Bias.Data[i]
+
+		conv.Bias.Data[i] = orig + eps
+		outPlus := conv.Forward(input)
+		var lossPlus float32
+		for j := range outPlus.Data {
+			diff := outPlus.Data[j] - target.Data[j]
+			lossPlus += 0.5 * diff * diff
+		}
+
+		conv.Bias.Data[i] = orig - eps
+		outMinus := conv.Forward(input)
+		var lossMinus float32
+		for j := range outMinus.Data {
+			diff := outMinus.Data[j] - target.Data[j]
+			lossMinus += 0.5 * diff * diff
+		}
+
+		conv.Bias.Data[i] = orig
+
+		numGrad := (lossPlus - lossMinus) / (2.0 * eps)
+		anaGrad := conv.Bias.Grad[i]
+
+		diff := float64(math.Abs(float64(anaGrad - numGrad)))
+		if diff > 1e-2 {
+			t.Fatalf("bias gradient mismatch at %d: analytical=%f, numerical=%f, diff=%f", i, anaGrad, numGrad, diff)
+		}
+	}
+
+	// 3. Verify Input Gradients vs Numerical Gradient
+	for i := range input.Data {
+		orig := input.Data[i]
+
+		input.Data[i] = orig + eps
+		outPlus := conv.Forward(input)
+		var lossPlus float32
+		for j := range outPlus.Data {
+			diff := outPlus.Data[j] - target.Data[j]
+			lossPlus += 0.5 * diff * diff
+		}
+
+		input.Data[i] = orig - eps
+		outMinus := conv.Forward(input)
+		var lossMinus float32
+		for j := range outMinus.Data {
+			diff := outMinus.Data[j] - target.Data[j]
+			lossMinus += 0.5 * diff * diff
+		}
+
+		input.Data[i] = orig
+
+		numGrad := (lossPlus - lossMinus) / (2.0 * eps)
+		anaGrad := gradInput.Data[i]
+
+		diff := float64(math.Abs(float64(anaGrad - numGrad)))
+		if diff > 1e-2 {
+			t.Fatalf("input gradient mismatch at %d: analytical=%f, numerical=%f, diff=%f", i, anaGrad, numGrad, diff)
+		}
 	}
 }
