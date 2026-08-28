@@ -322,10 +322,16 @@ func Test13ChannelManifoldCalculus(t *testing.T) {
 		t.Fatalf("M4 mismatch: expected %f, got %f", expectedM4, got)
 	}
 
-	// Verify Knight Channel 5 (offset (-2, -1)) at (5, 5)
-	expectedM5 := abs32(input.Get(0, 5, 5) - input.Get(0, 4, 3))
-	if got := manifold.Get(5, 5, 5); got != expectedM5 {
-		t.Fatalf("M5 mismatch: expected %f, got %f", expectedM5, got)
+	// Verify All 8 Knight Channels (k in [0, 7] -> Channels 5..12)
+	for k := 0; k < 8; k++ {
+		dx := KnightOffsets[k][0]
+		dy := KnightOffsets[k][1]
+		nx := clamp(5+dx, 0, w-1)
+		ny := clamp(5+dy, 0, h-1)
+		expectedVal := abs32(input.Get(0, 5, 5) - input.Get(0, ny, nx))
+		if got := manifold.Get(5+k, 5, 5); got != expectedVal {
+			t.Fatalf("Knight channel %d mismatch: expected %f, got %f", 5+k, expectedVal, got)
+		}
 	}
 
 	// Verify in-place reuse without heap reallocation
