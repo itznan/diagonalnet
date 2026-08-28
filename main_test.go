@@ -298,6 +298,36 @@ func Test13ChannelManifoldCalculus(t *testing.T) {
 		}
 	}
 
+	// Verify Channel 1 (Top-Left: dx=-1, dy=-1) at (5, 5)
+	expectedM1 := abs32(input.Get(0, 5, 5) - input.Get(0, 4, 4))
+	if got := manifold.Get(1, 5, 5); got != expectedM1 {
+		t.Fatalf("M1 mismatch: expected %f, got %f", expectedM1, got)
+	}
+
+	// Verify Channel 2 (Top-Right: dx=+1, dy=-1) at (5, 5)
+	expectedM2 := abs32(input.Get(0, 5, 5) - input.Get(0, 4, 6))
+	if got := manifold.Get(2, 5, 5); got != expectedM2 {
+		t.Fatalf("M2 mismatch: expected %f, got %f", expectedM2, got)
+	}
+
+	// Verify Channel 3 (Bottom-Left: dx=-1, dy=+1) at (5, 5)
+	expectedM3 := abs32(input.Get(0, 5, 5) - input.Get(0, 6, 4))
+	if got := manifold.Get(3, 5, 5); got != expectedM3 {
+		t.Fatalf("M3 mismatch: expected %f, got %f", expectedM3, got)
+	}
+
+	// Verify Channel 4 (Bottom-Right: dx=+1, dy=+1) at (5, 5)
+	expectedM4 := abs32(input.Get(0, 5, 5) - input.Get(0, 6, 6))
+	if got := manifold.Get(4, 5, 5); got != expectedM4 {
+		t.Fatalf("M4 mismatch: expected %f, got %f", expectedM4, got)
+	}
+
+	// Verify Knight Channel 5 (offset (-2, -1)) at (5, 5)
+	expectedM5 := abs32(input.Get(0, 5, 5) - input.Get(0, 4, 3))
+	if got := manifold.Get(5, 5, 5); got != expectedM5 {
+		t.Fatalf("M5 mismatch: expected %f, got %f", expectedM5, got)
+	}
+
 	// Verify in-place reuse without heap reallocation
 	reused := NewTensor(13, h, w)
 	ComputeManifoldInto(input, reused)

@@ -408,26 +408,39 @@ func clamp(val, minVal, maxVal int) int {
 	return val
 }
 
-// Directional offset vectors for 13-channel spatial difference manifold.
+// abs32 returns the absolute value of a float32 without float64 conversion overhead.
+func abs32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// Directional offset vectors for 13-channel spatial difference manifold:
 var (
-	// Channels 1-4: Immediate diagonals (45°, 135°, 225°, 315°)
+	// Channels 1-4: Immediate diagonals (|I(x, y) - I(clamp(x+dx), clamp(y+dy))|)
+	// Ch 1: (-1, -1) Top-Left
+	// Ch 2: (+1, -1) Top-Right
+	// Ch 3: (-1, +1) Bottom-Left
+	// Ch 4: (+1, +1) Bottom-Right
 	DiagonalOffsets = [4][2]int{
-		{+1, -1}, // Ch 1: 45°  (top-right)
-		{-1, -1}, // Ch 2: 135° (top-left)
-		{-1, +1}, // Ch 3: 225° (bottom-left)
-		{+1, +1}, // Ch 4: 315° (bottom-right)
+		{-1, -1}, // Ch 1: Top-Left
+		{+1, -1}, // Ch 2: Top-Right
+		{-1, +1}, // Ch 3: Bottom-Left
+		{+1, +1}, // Ch 4: Bottom-Right
 	}
 
-	// Channels 5-12: Long-range chess knight-move differential operators
+	// Channels 5-12: 8-Way Chess Knight-Move differential operators (K set)
+	// K = { (-2, -1), (-2, +1), (-1, -2), (-1, +2), (+1, -2), (+1, +2), (+2, -1), (+2, +1) }
 	KnightOffsets = [8][2]int{
-		{+1, -2}, // Ch 5:  Knight 1
-		{+2, -1}, // Ch 6:  Knight 2
-		{+2, +1}, // Ch 7:  Knight 3
-		{+1, +2}, // Ch 8:  Knight 4
-		{-1, +2}, // Ch 9:  Knight 5
-		{-2, +1}, // Ch 10: Knight 6
-		{-2, -1}, // Ch 11: Knight 7
-		{-1, -2}, // Ch 12: Knight 8
+		{-2, -1}, // Ch 5:  Knight 1
+		{-2, +1}, // Ch 6:  Knight 2
+		{-1, -2}, // Ch 7:  Knight 3
+		{-1, +2}, // Ch 8:  Knight 4
+		{+1, -2}, // Ch 9:  Knight 5
+		{+1, +2}, // Ch 10: Knight 6
+		{+2, -1}, // Ch 11: Knight 7
+		{+2, +1}, // Ch 12: Knight 8
 	}
 )
 
@@ -452,7 +465,7 @@ func ComputeManifoldInto(input *Tensor, output *Tensor) {
 	// Channel 0: Base normalized grayscale intensity I(x, y)
 	ExtractChannel0(input, output)
 
-	// Channels 1-4: Immediate diagonal differences
+	// Channels 1-4: Immediate diagonal absolute gradients
 	for ch := 0; ch < 4; ch++ {
 		dx := DiagonalOffsets[ch][0]
 		dy := DiagonalOffsets[ch][1]
@@ -465,12 +478,12 @@ func ComputeManifoldInto(input *Tensor, output *Tensor) {
 				nx := clamp(x+dx, 0, W-1)
 				baseVal := input.Data[yOffset+x]
 				neighborVal := input.Data[nyOffset+nx]
-				output.Data[chOffset+yOffset+x] = neighborVal - baseVal
+				output.Data[chOffset+yOffset+x] = abs32(baseVal - neighborVal)
 			}
 		}
 	}
 
-	// Channels 5-12: Long-range knight-move differences
+	// Channels 5-12: 8-Way Chess Knight-Move absolute differences
 	for k := 0; k < 8; k++ {
 		dx := KnightOffsets[k][0]
 		dy := KnightOffsets[k][1]
@@ -483,7 +496,7 @@ func ComputeManifoldInto(input *Tensor, output *Tensor) {
 				nx := clamp(x+dx, 0, W-1)
 				baseVal := input.Data[yOffset+x]
 				neighborVal := input.Data[nyOffset+nx]
-				output.Data[chOffset+yOffset+x] = neighborVal - baseVal
+				output.Data[chOffset+yOffset+x] = abs32(baseVal - neighborVal)
 			}
 		}
 	}
