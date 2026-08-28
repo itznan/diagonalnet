@@ -532,7 +532,7 @@ func ComputeManifoldTensor(input *Tensor) *Tensor {
 }
 
 // ============================================================================
-// 7. CONVOLUTIONAL NEURAL NETWORK LAYERS
+// 7. CONVOLUTIONAL, POOLING & DENSE NEURAL NETWORK LAYERS
 // ============================================================================
 
 // Conv2DLayer implements a multi-channel 2D convolutional layer with arbitrary kernel size, stride, and padding.
@@ -865,6 +865,303 @@ func (l *Conv2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
 		}(startCin, endCin)
 	}
 	wgIn.Wait()
+}
+
+// AdaptiveAvgPool2DLayer dynamically pools arbitrary input feature dimensions to a fixed [TargetH x TargetW] output.
+type AdaptiveAvgPool2DLayer struct {
+	TargetH   int
+	TargetW   int
+	LastInput *Tensor
+}
+
+// NewAdaptiveAvgPool2DLayer constructs a new adaptive average pooling layer.
+func NewAdaptiveAvgPool2DLayer(targetH, targetW int) *AdaptiveAvgPool2DLayer {
+	return &AdaptiveAvgPool2DLayer{
+		TargetH: targetH,
+		TargetW: targetW,
+	}
+}
+
+// Forward executes the 2D adaptive average pooling forward pass.
+func (l *AdaptiveAvgPool2DLayer) Forward(input *Tensor) *Tensor {
+	output := NewTensor(input.Channels, l.TargetH, l.TargetW)
+	l.ForwardInto(input, output)
+	return output
+}
+
+// ForwardInto executes adaptive average pooling into pre-allocated output tensor.
+func (l *AdaptiveAvgPool2DLayer) ForwardInto(input *Tensor, output *Tensor) {
+	l.LastInput = input
+	C, inH, inW := input.Channels, input.Height, input.Width
+	tgtH, tgtW := l.TargetH, l.TargetW
+
+	if output.Channels != C || output.Height != tgtH || output.Width != tgtW {
+		*output = *NewTensor(C, tgtH, tgtW)
+	}
+
+	for c := 0; c < C; c++ {
+		for y := 0; y < tgtH; y++ {
+			yStart := (y * inH) / tgtH
+			yEnd := ((y + 1) * inH + tgtH - 1) / tgtH
+			if yEnd > inH {
+				yEnd = inH
+			}
+
+			for x := 0; x < tgtW; x++ {
+				xStart := (x * inW) / tgtW
+				xEnd := ((x + 1) * inW + tgtW - 1) / tgtW
+				if xEnd > inW {
+					xEnd = inW
+				}
+
+				binCount := (yEnd - yStart) * (xEnd - xStart)
+				if binCount == 0 {
+					binCount = 1
+				}
+
+				var sum float32
+				for iy := yStart; iy < yEnd; iy++ {
+					for ix := xStart; ix < xEnd; ix++ {
+						sum += input.Get(c, iy, ix)
+					}
+				}
+
+				output.Set(c, y, x, sum/float32(binCount))
+			}
+		}
+	}
+}
+
+// Backward distributes gradients uniformly across adaptive pooling bins:
+// dL/dX(c, iy, ix) = sum_{y, x} (dL/dY(c, y, x) / (bin_width * bin_height))
+func (l *AdaptiveAvgPool2DLayer) Backward(gradOutput *Tensor) *Tensor {
+	gradInput := NewTensor(l.LastInput.Channels, l.LastInput.Height, l.LastInput.Width)
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto executes adaptive average pooling backpropagation into pre-allocated tensor.
+func (l *AdaptiveAvgPool2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
+	input := l.LastInput
+	C, inH, inW := input.Channels, input.Height, input.Width
+	tgtH, tgtW := l.TargetH, l.TargetW
+
+	if gradInput.Channels != C || gradInput.Height != inH || gradInput.Width != inW {
+		*gradInput = *NewTensor(C, inH, inW)
+	}
+	gradInput.Zero()
+
+	for c := 0; c < C; c++ {
+		for y := 0; y < tgtH; y++ {
+			yStart := (y * inH) / tgtH
+			yEnd := ((y + 1) * inH + tgtH - 1) / tgtH
+			if yEnd > inH {
+				yEnd = inH
+			}
+
+			for x := 0; x < tgtW; x++ {
+				xStart := (x * inW) / tgtW
+				xEnd := ((x + 1) * inW + tgtW - 1) / tgtW
+				if xEnd > inW {
+					xEnd = inW
+				}
+
+				binCount := (yEnd - yStart) * (xEnd - xStart)
+				if binCount == 0 {
+					binCount = 1
+				}
+
+				dY := gradOutput.Get(c, y, x)
+				distributedGrad := dY / float32(binCount)
+
+				for iy := yStart; iy < yEnd; iy++ {
+					for ix := xStart; ix < xEnd; ix++ {
+						val := gradInput.Get(c, iy, ix)
+						gradInput.Set(c, iy, ix, val+distributedGrad)
+					}
+				}
+			}
+		}
+	}
+}
+
+// LinearLayer implements a fully connected feedforward layer with vectorization and analytical Jacobian backpropagation.
+type LinearLayer struct {
+	Weights   *Parameter // Shape: [OutputDim, InputDim] -> flat size OutputDim * InputDim
+	Biases    *Parameter // Shape: [OutputDim]
+	InputDim  int
+	OutputDim int
+	LastInput []float32
+}
+
+// NewLinearLayer constructs and initializes a LinearLayer with Kaiming Uniform weights and zero biases.
+func NewLinearLayer(inDim, outDim int, rng *rand.Rand) *LinearLayer {
+	layer := &LinearLayer{
+		Weights:   NewParameter(outDim * inDim),
+		Biases:    NewParameter(outDim),
+		InputDim:  inDim,
+		OutputDim: outDim,
+	}
+
+	if rng != nil {
+		InitKaimingUniform(layer.Weights, inDim, rng)
+	} else {
+		defaultRNG := rand.New(rand.NewSource(42))
+		InitKaimingUniform(layer.Weights, inDim, defaultRNG)
+	}
+	InitZeros(layer.Biases)
+
+	return layer
+}
+
+// ZeroGrad zeroes out gradient buffers for weights and biases.
+func (l *LinearLayer) ZeroGrad() {
+	l.Weights.ZeroGrad()
+	l.Biases.ZeroGrad()
+}
+
+// Parameters returns references to trainable parameters in the linear layer.
+func (l *LinearLayer) Parameters() []*Parameter {
+	return []*Parameter{l.Weights, l.Biases}
+}
+
+// Forward computes y_i = b_i + sum_j W_{i, j} * x_j for all i in [0, OutputDim-1].
+func (l *LinearLayer) Forward(input []float32) []float32 {
+	out := make([]float32, l.OutputDim)
+	l.ForwardInto(input, out)
+	return out
+}
+
+// ForwardInto computes dense feedforward layer into pre-allocated output slice.
+func (l *LinearLayer) ForwardInto(input []float32, output []float32) {
+	if len(l.LastInput) != len(input) {
+		l.LastInput = make([]float32, len(input))
+	}
+	copy(l.LastInput, input)
+
+	inDim := l.InputDim
+	outDim := l.OutputDim
+
+	for i := 0; i < outDim; i++ {
+		wOffset := i * inDim
+		var sum float32 = l.Biases.Data[i]
+		for j := 0; j < inDim; j++ {
+			sum += l.Weights.Data[wOffset+j] * input[j]
+		}
+		output[i] = sum
+	}
+}
+
+// Backward computes analytical Jacobian parameter gradients and input gradients:
+// 1. dL/dW_{i, j} = dL/dy_i * x_j
+// 2. dL/db_i = dL/dy_i
+// 3. dL/dx_j = sum_{i=0}^{D_out-1} W_{i, j} * dL/dy_i
+func (l *LinearLayer) Backward(gradOutput []float32) []float32 {
+	gradInput := make([]float32, l.InputDim)
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto computes linear backpropagation into pre-allocated gradInput slice.
+func (l *LinearLayer) BackwardInto(gradOutput []float32, gradInput []float32) {
+	inDim := l.InputDim
+	outDim := l.OutputDim
+	input := l.LastInput
+
+	for j := 0; j < inDim; j++ {
+		gradInput[j] = 0
+	}
+
+	for i := 0; i < outDim; i++ {
+		gy := gradOutput[i]
+		l.Biases.Grad[i] += gy
+		wOffset := i * inDim
+
+		for j := 0; j < inDim; j++ {
+			l.Weights.Grad[wOffset+j] += gy * input[j]
+			gradInput[j] += l.Weights.Data[wOffset+j] * gy
+		}
+	}
+}
+
+// DropoutLayer implements Inverted Dropout regularization (default p=0.2).
+type DropoutLayer struct {
+	DropRate float32 // p = 0.2
+	Scale    float32 // 1.0 / (1.0 - p) = 1.25
+	Training bool
+	Mask     []float32
+	RNG      *rand.Rand
+}
+
+// NewDropoutLayer constructs an Inverted Dropout layer with the specified drop probability.
+func NewDropoutLayer(dropRate float32, rng *rand.Rand) *DropoutLayer {
+	if dropRate < 0 {
+		dropRate = 0
+	}
+	if dropRate >= 1.0 {
+		dropRate = 0.99
+	}
+	scale := float32(1.0 / (1.0 - float64(dropRate)))
+	if rng == nil {
+		rng = rand.New(rand.NewSource(42))
+	}
+	return &DropoutLayer{
+		DropRate: dropRate,
+		Scale:    scale,
+		Training: true,
+		RNG:      rng,
+	}
+}
+
+// Forward applies Bernoulli inverted dropout during training, or passes through during inference.
+func (l *DropoutLayer) Forward(input []float32) []float32 {
+	out := make([]float32, len(input))
+	l.ForwardInto(input, out)
+	return out
+}
+
+// ForwardInto computes inverted dropout into pre-allocated slice.
+func (l *DropoutLayer) ForwardInto(input []float32, output []float32) {
+	N := len(input)
+	if len(l.Mask) != N {
+		l.Mask = make([]float32, N)
+	}
+
+	if !l.Training || l.DropRate == 0 {
+		copy(output, input)
+		for i := 0; i < N; i++ {
+			l.Mask[i] = 1.0
+		}
+		return
+	}
+
+	for i := 0; i < N; i++ {
+		if l.RNG.Float32() >= l.DropRate {
+			l.Mask[i] = 1.0
+			output[i] = input[i] * l.Scale
+		} else {
+			l.Mask[i] = 0.0
+			output[i] = 0.0
+		}
+	}
+}
+
+// Backward scales incoming gradients by the Bernoulli inverted mask.
+func (l *DropoutLayer) Backward(gradOutput []float32) []float32 {
+	gradInput := make([]float32, len(gradOutput))
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto computes dropout gradient scaling into pre-allocated slice.
+func (l *DropoutLayer) BackwardInto(gradOutput []float32, gradInput []float32) {
+	if !l.Training || l.DropRate == 0 {
+		copy(gradInput, gradOutput)
+		return
+	}
+	for i := range gradOutput {
+		gradInput[i] = gradOutput[i] * l.Mask[i] * l.Scale
+	}
 }
 
 // ============================================================================

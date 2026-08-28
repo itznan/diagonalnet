@@ -365,10 +365,8 @@ func TestConv2DLayerBackwardJacobian(t *testing.T) {
 		input.Data[i] = rng.Float32()*2.0 - 1.0
 	}
 
-	// Forward pass
 	output := conv.Forward(input)
 
-	// Target tensor for Mean Squared Error loss: L = 0.5 * sum((Y - T)^2)
 	target := NewTensor(outC, output.Height, output.Width)
 	for i := range target.Data {
 		target.Data[i] = rng.Float32()
@@ -474,6 +472,200 @@ func TestConv2DLayerBackwardJacobian(t *testing.T) {
 		diff := float64(math.Abs(float64(anaGrad - numGrad)))
 		if diff > 1e-2 {
 			t.Fatalf("input gradient mismatch at %d: analytical=%f, numerical=%f, diff=%f", i, anaGrad, numGrad, diff)
+		}
+	}
+}
+
+// 7. AdaptiveAvgPool2DLayer Unit Tests
+func TestAdaptiveAvgPool2DLayer(t *testing.T) {
+	pool := NewAdaptiveAvgPool2DLayer(2, 2)
+
+	// Input 1 channel 4x4
+	input := NewTensor(1, 4, 4)
+	for i := range input.Data {
+		input.Data[i] = float32(i)
+	}
+
+	output := pool.Forward(input)
+	c, h, w := output.Shape()
+	if c != 1 || h != 2 || w != 2 {
+		t.Fatalf("unexpected pool shape (%d, %d, %d)", c, h, w)
+	}
+
+	// Quadrant 0: y in [0,1], x in [0,1] -> input indices (0, 1, 4, 5) -> values (0, 1, 4, 5) -> sum 10 / 4 = 2.5
+	q0 := output.Get(0, 0, 0)
+	if q0 != 2.5 {
+		t.Fatalf("expected q0=2.5, got %f", q0)
+	}
+
+	gradOutput := NewTensor(1, 2, 2)
+	gradOutput.Set(0, 0, 0, 4.0) // distributes 4.0 / 4 = 1.0 to each quadrant element
+	gradInput := pool.Backward(gradOutput)
+
+	if gradInput.Get(0, 0, 0) != 1.0 || gradInput.Get(0, 1, 1) != 1.0 {
+		t.Fatalf("gradient distribution mismatch: expected 1.0, got %f", gradInput.Get(0, 0, 0))
+	}
+}
+
+// 8. LinearLayer Unit Tests
+func TestLinearLayerForwardAndBackward(t *testing.T) {
+	inDim := 5
+	outDim := 3
+	rng := rand.New(rand.NewSource(42))
+	dense := NewLinearLayer(inDim, outDim, rng)
+
+	input := make([]float32, inDim)
+	for i := range input {
+		input[i] = rng.Float32()*2.0 - 1.0
+	}
+
+	output := dense.Forward(input)
+	if len(output) != outDim {
+		t.Fatalf("expected output len %d, got %d", outDim, len(output))
+	}
+
+	target := make([]float32, outDim)
+	for i := range target {
+		target[i] = rng.Float32()
+	}
+
+	gradOutput := make([]float32, outDim)
+	for i := range gradOutput {
+		gradOutput[i] = output[i] - target[i]
+	}
+
+	dense.ZeroGrad()
+	gradInput := dense.Backward(gradOutput)
+
+	eps := float32(1e-3)
+
+	// Verify Weight Gradients
+	for i := range dense.Weights.Data {
+		orig := dense.Weights.Data[i]
+
+		dense.Weights.Data[i] = orig + eps
+		outPlus := dense.Forward(input)
+		var lossPlus float32
+		for j := range outPlus {
+			diff := outPlus[j] - target[j]
+			lossPlus += 0.5 * diff * diff
+		}
+
+		dense.Weights.Data[i] = orig - eps
+		outMinus := dense.Forward(input)
+		var lossMinus float32
+		for j := range outMinus {
+			diff := outMinus[j] - target[j]
+			lossMinus += 0.5 * diff * diff
+		}
+
+		dense.Weights.Data[i] = orig
+		numGrad := (lossPlus - lossMinus) / (2.0 * eps)
+		anaGrad := dense.Weights.Grad[i]
+
+		if math.Abs(float64(anaGrad-numGrad)) > 1e-2 {
+			t.Fatalf("linear weight gradient mismatch at %d: ana=%f, num=%f", i, anaGrad, numGrad)
+		}
+	}
+
+	// Verify Bias Gradients
+	for i := range dense.Biases.Data {
+		orig := dense.Biases.Data[i]
+
+		dense.Biases.Data[i] = orig + eps
+		outPlus := dense.Forward(input)
+		var lossPlus float32
+		for j := range outPlus {
+			diff := outPlus[j] - target[j]
+			lossPlus += 0.5 * diff * diff
+		}
+
+		dense.Biases.Data[i] = orig - eps
+		outMinus := dense.Forward(input)
+		var lossMinus float32
+		for j := range outMinus {
+			diff := outMinus[j] - target[j]
+			lossMinus += 0.5 * diff * diff
+		}
+
+		dense.Biases.Data[i] = orig
+		numGrad := (lossPlus - lossMinus) / (2.0 * eps)
+		anaGrad := dense.Biases.Grad[i]
+
+		if math.Abs(float64(anaGrad-numGrad)) > 1e-2 {
+			t.Fatalf("linear bias gradient mismatch at %d: ana=%f, num=%f", i, anaGrad, numGrad)
+		}
+	}
+
+	// Verify Input Gradients
+	for j := range input {
+		orig := input[j]
+
+		input[j] = orig + eps
+		outPlus := dense.Forward(input)
+		var lossPlus float32
+		for k := range outPlus {
+			diff := outPlus[k] - target[k]
+			lossPlus += 0.5 * diff * diff
+		}
+
+		input[j] = orig - eps
+		outMinus := dense.Forward(input)
+		var lossMinus float32
+		for k := range outMinus {
+			diff := outMinus[k] - target[k]
+			lossMinus += 0.5 * diff * diff
+		}
+
+		input[j] = orig
+		numGrad := (lossPlus - lossMinus) / (2.0 * eps)
+		anaGrad := gradInput[j]
+
+		if math.Abs(float64(anaGrad-numGrad)) > 1e-2 {
+			t.Fatalf("linear input gradient mismatch at %d: ana=%f, num=%f", j, anaGrad, numGrad)
+		}
+	}
+}
+
+// 9. DropoutLayer Unit Tests
+func TestDropoutLayer(t *testing.T) {
+	rng := rand.New(rand.NewSource(101))
+	dropout := NewDropoutLayer(0.2, rng)
+
+	input := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0}
+
+	// 1. Training mode
+	dropout.Training = true
+	outTrain := dropout.Forward(input)
+
+	for i, v := range outTrain {
+		if dropout.Mask[i] == 1.0 {
+			expected := input[i] * 1.25
+			if v != expected {
+				t.Fatalf("expected scaled value %f, got %f", expected, v)
+			}
+		} else {
+			if v != 0.0 {
+				t.Fatalf("expected dropped 0.0, got %f", v)
+			}
+		}
+	}
+
+	gradOut := []float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
+	gradIn := dropout.Backward(gradOut)
+	for i, g := range gradIn {
+		expectedG := gradOut[i] * dropout.Mask[i] * 1.25
+		if g != expectedG {
+			t.Fatalf("backward gradient mismatch: expected %f, got %f", expectedG, g)
+		}
+	}
+
+	// 2. Inference mode (Identity)
+	dropout.Training = false
+	outEval := dropout.Forward(input)
+	for i, v := range outEval {
+		if v != input[i] {
+			t.Fatalf("inference passthrough mismatch: expected %f, got %f", input[i], v)
 		}
 	}
 }
