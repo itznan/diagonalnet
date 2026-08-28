@@ -1,9 +1,42 @@
-# Binaries
-bin/*.exe
+# Compiled Executables & Binaries
 bin/*
 !bin/.gitkeep
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
 
-# System & IDE
+# Model Weights & Checkpoints
+weights/*.bin
+!weights/.gitkeep
+
+# Generated Benchmark Files
+assets/*.csv
+assets/*.pdf
+!assets/.gitkeep
+
+# Workspace Keepers
+!data/.gitkeep
+
+# Temporary & Cache Files
+tmp/
+*.tmp
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Editor & IDE Files
+*.swp
+*.swo
+*~
 .vscode/
 .idea/
-*.tmp
+*.sublime-project
+*.sublime-workspace
