@@ -279,7 +279,6 @@ func TestComputeManifoldSignatureAndParallel(t *testing.T) {
 		}
 	}
 
-	// Compute via multi-threaded slice function
 	manifold := ComputeManifold(input, h, w)
 
 	if len(manifold) != 13*h*w {
@@ -312,5 +311,46 @@ func TestComputeManifoldSignatureAndParallel(t *testing.T) {
 		if got := manifold[(k+5)*hw+y*w+x]; got != expectedVal {
 			t.Fatalf("Knight channel %d mismatch: expected %f, got %f", 5+k, expectedVal, got)
 		}
+	}
+}
+
+// 6. Conv2DLayer Unit Tests
+func TestConv2DLayerForward(t *testing.T) {
+	inC, inH, inW := 2, 5, 5
+	outC := 3
+	K := 3
+	S := 1
+	P := 1
+
+	conv := NewConv2DLayer(inC, outC, K, S, P, nil)
+
+	// Set weights to 1.0 and bias to 0.5
+	InitConstant(conv.Weights, 1.0)
+	InitConstant(conv.Bias, 0.5)
+
+	input := NewTensor(inC, inH, inW)
+	// Fill input with 1.0
+	for i := range input.Data {
+		input.Data[i] = 1.0
+	}
+
+	output := conv.Forward(input)
+
+	// Check output shape: with inH=5, P=1, K=3, S=1 -> (5+2-3)/1 + 1 = 5
+	c, h, w := output.Shape()
+	if c != outC || h != inH || w != inW {
+		t.Fatalf("unexpected output shape (%d, %d, %d), expected (%d, %d, %d)", c, h, w, outC, inH, inW)
+	}
+
+	// Center pixel (y=2, x=2): full 3x3 window on both channels = 2 channels * 9 pixels * 1.0 = 18.0 + bias(0.5) = 18.5
+	centerVal := output.Get(0, 2, 2)
+	if centerVal != 18.5 {
+		t.Fatalf("expected center value 18.5, got %f", centerVal)
+	}
+
+	// Corner pixel (y=0, x=0): 2x2 valid window due to padding = 2 channels * 4 pixels * 1.0 = 8.0 + bias(0.5) = 8.5
+	cornerVal := output.Get(0, 0, 0)
+	if cornerVal != 8.5 {
+		t.Fatalf("expected corner value 8.5, got %f", cornerVal)
 	}
 }

@@ -532,7 +532,157 @@ func ComputeManifoldTensor(input *Tensor) *Tensor {
 }
 
 // ============================================================================
-// 7. CLI ROUTING & EXECUTION HANDLERS
+// 7. CONVOLUTIONAL NEURAL NETWORK LAYERS
+// ============================================================================
+
+// Conv2DLayer implements a multi-channel 2D convolutional layer with arbitrary kernel size, stride, and padding.
+type Conv2DLayer struct {
+	InChannels  int
+	OutChannels int
+	KernelSize  int
+	Stride      int
+	Padding     int
+
+	Weights *Parameter // Shape: [OutChannels, InChannels, KernelSize, KernelSize]
+	Bias    *Parameter // Shape: [OutChannels]
+
+	LastInput *Tensor
+}
+
+// NewConv2DLayer constructs and initializes a new Conv2DLayer using Kaiming Uniform weight initialization.
+func NewConv2DLayer(inChannels, outChannels, kernelSize, stride, padding int, rng *rand.Rand) *Conv2DLayer {
+	layer := &Conv2DLayer{
+		InChannels:  inChannels,
+		OutChannels: outChannels,
+		KernelSize:  kernelSize,
+		Stride:      stride,
+		Padding:     padding,
+		Weights:     NewParameter(outChannels * inChannels * kernelSize * kernelSize),
+		Bias:        NewParameter(outChannels),
+	}
+
+	fanIn := inChannels * kernelSize * kernelSize
+	if rng != nil {
+		InitKaimingUniform(layer.Weights, fanIn, rng)
+	} else {
+		defaultRNG := rand.New(rand.NewSource(42))
+		InitKaimingUniform(layer.Weights, fanIn, defaultRNG)
+	}
+	InitZeros(layer.Bias)
+
+	return layer
+}
+
+// OutputShape calculates spatial dimensions (outH, outW) given input dimensions (inH, inW).
+func (l *Conv2DLayer) OutputShape(inH, inW int) (outH, outW int) {
+	outH = (inH+2*l.Padding-l.KernelSize)/l.Stride + 1
+	outW = (inW+2*l.Padding-l.KernelSize)/l.Stride + 1
+	return outH, outW
+}
+
+// Forward computes the parallelized multi-channel 2D convolution forward pass:
+// Y(c_out, y, x) = B(c_out) + sum_{c_in} sum_{ky} sum_{kx} W(c_out, c_in, ky, kx) * X(c_in, y*S + ky - P, x*S + kx - P)
+func (l *Conv2DLayer) Forward(input *Tensor) *Tensor {
+	outH, outW := l.OutputShape(input.Height, input.Width)
+	output := NewTensor(l.OutChannels, outH, outW)
+	l.ForwardInto(input, output)
+	return output
+}
+
+// ForwardInto computes the 2D convolution into a pre-allocated destination tensor, parallelizing output channels across CPU cores.
+func (l *Conv2DLayer) ForwardInto(input *Tensor, output *Tensor) {
+	l.LastInput = input
+
+	inC, inH, inW := input.Channels, input.Height, input.Width
+	outC := l.OutChannels
+	outH, outW := l.OutputShape(inH, inW)
+
+	if output.Channels != outC || output.Height != outH || output.Width != outW {
+		*output = *NewTensor(outC, outH, outW)
+	}
+
+	K := l.KernelSize
+	S := l.Stride
+	P := l.Padding
+	Ksq := K * K
+	inHW := inH * inW
+	outHW := outH * outW
+	weightsPerOutChannel := inC * Ksq
+
+	numWorkers := runtime.NumCPU()
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
+	if numWorkers > outC {
+		numWorkers = outC
+	}
+
+	channelsPerWorker := (outC + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
+
+	for w := 0; w < numWorkers; w++ {
+		startC := w * channelsPerWorker
+		endC := startC + channelsPerWorker
+		if endC > outC {
+			endC = outC
+		}
+		if startC >= endC {
+			continue
+		}
+
+		wg.Add(1)
+		go func(sC, eC int) {
+			defer wg.Done()
+			for cOut := sC; cOut < eC; cOut++ {
+				biasVal := l.Bias.Data[cOut]
+				outChOffset := cOut * outHW
+				weightOutOffset := cOut * weightsPerOutChannel
+
+				for y := 0; y < outH; y++ {
+					inYBase := y*S - P
+					outYOffset := outChOffset + y*outW
+
+					for x := 0; x < outW; x++ {
+						inXBase := x*S - P
+						var sum float32 = biasVal
+
+						for cIn := 0; cIn < inC; cIn++ {
+							inChOffset := cIn * inHW
+							weightInOffset := weightOutOffset + cIn*Ksq
+
+							for ky := 0; ky < K; ky++ {
+								inY := inYBase + ky
+								if inY < 0 || inY >= inH {
+									continue
+								}
+								inRowOffset := inChOffset + inY*inW
+								weightRowOffset := weightInOffset + ky*K
+
+								for kx := 0; kx < K; kx++ {
+									inX := inXBase + kx
+									if inX < 0 || inX >= inW {
+										continue
+									}
+
+									weightVal := l.Weights.Data[weightRowOffset+kx]
+									inputVal := input.Data[inRowOffset+inX]
+									sum += weightVal * inputVal
+								}
+							}
+						}
+
+						output.Data[outYOffset+x] = sum
+					}
+				}
+			}
+		}(startC, endC)
+	}
+
+	wg.Wait()
+}
+
+// ============================================================================
+// 8. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
 
 func printHelp() {
