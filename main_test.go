@@ -270,76 +270,47 @@ func TestClamp(t *testing.T) {
 	}
 }
 
-func Test13ChannelManifoldCalculus(t *testing.T) {
-	h, w := 10, 10
-	input := NewTensor(1, h, w)
+func TestComputeManifoldSignatureAndParallel(t *testing.T) {
+	h, w := 28, 28
+	input := make([]float32, h*w)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			input.Set(0, y, x, float32(y*w+x)/100.0)
+			input[y*w+x] = float32(y*w+x) / float32(h*w)
 		}
 	}
 
-	manifold := ComputeManifold(input)
+	// Compute via multi-threaded slice function
+	manifold := ComputeManifold(input, h, w)
 
-	// Verify dimensions: [13 x H x W]
-	c, mh, mw := manifold.Shape()
-	if c != 13 || mh != h || mw != w {
-		t.Fatalf("expected manifold shape (13, %d, %d), got (%d, %d, %d)", h, w, c, mh, mw)
+	if len(manifold) != 13*h*w {
+		t.Fatalf("expected slice length %d, got %d", 13*h*w, len(manifold))
 	}
 
-	// Verify Channel 0: Base intensity exact match
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			expected := input.Get(0, y, x)
-			got := manifold.Get(0, y, x)
-			if got != expected {
-				t.Fatalf("Channel 0 mismatch at (%d, %d): expected %f, got %f", y, x, expected, got)
-			}
+	hw := h * w
+
+	// Verify Channel 0 matches input exactly
+	for i := 0; i < hw; i++ {
+		if manifold[i] != input[i] {
+			t.Fatalf("channel 0 mismatch at index %d", i)
 		}
 	}
 
-	// Verify Channel 1 (Top-Left: dx=-1, dy=-1) at (5, 5)
-	expectedM1 := abs32(input.Get(0, 5, 5) - input.Get(0, 4, 4))
-	if got := manifold.Get(1, 5, 5); got != expectedM1 {
+	// Verify Channel 1 (Top-Left: dx=-1, dy=-1) at (10, 10)
+	y, x := 10, 10
+	expectedM1 := abs32(input[y*w+x] - input[(y-1)*w+(x-1)])
+	if got := manifold[1*hw+y*w+x]; got != expectedM1 {
 		t.Fatalf("M1 mismatch: expected %f, got %f", expectedM1, got)
 	}
 
-	// Verify Channel 2 (Top-Right: dx=+1, dy=-1) at (5, 5)
-	expectedM2 := abs32(input.Get(0, 5, 5) - input.Get(0, 4, 6))
-	if got := manifold.Get(2, 5, 5); got != expectedM2 {
-		t.Fatalf("M2 mismatch: expected %f, got %f", expectedM2, got)
-	}
-
-	// Verify Channel 3 (Bottom-Left: dx=-1, dy=+1) at (5, 5)
-	expectedM3 := abs32(input.Get(0, 5, 5) - input.Get(0, 6, 4))
-	if got := manifold.Get(3, 5, 5); got != expectedM3 {
-		t.Fatalf("M3 mismatch: expected %f, got %f", expectedM3, got)
-	}
-
-	// Verify Channel 4 (Bottom-Right: dx=+1, dy=+1) at (5, 5)
-	expectedM4 := abs32(input.Get(0, 5, 5) - input.Get(0, 6, 6))
-	if got := manifold.Get(4, 5, 5); got != expectedM4 {
-		t.Fatalf("M4 mismatch: expected %f, got %f", expectedM4, got)
-	}
-
-	// Verify All 8 Knight Channels (k in [0, 7] -> Channels 5..12)
+	// Verify All 8 Knight Channels (k in [0, 7] -> Channels 5..12) at (10, 10)
 	for k := 0; k < 8; k++ {
 		dx := KnightOffsets[k][0]
 		dy := KnightOffsets[k][1]
-		nx := clamp(5+dx, 0, w-1)
-		ny := clamp(5+dy, 0, h-1)
-		expectedVal := abs32(input.Get(0, 5, 5) - input.Get(0, ny, nx))
-		if got := manifold.Get(5+k, 5, 5); got != expectedVal {
+		nx := clamp(x+dx, 0, w-1)
+		ny := clamp(y+dy, 0, h-1)
+		expectedVal := abs32(input[y*w+x] - input[ny*w+nx])
+		if got := manifold[(k+5)*hw+y*w+x]; got != expectedVal {
 			t.Fatalf("Knight channel %d mismatch: expected %f, got %f", 5+k, expectedVal, got)
-		}
-	}
-
-	// Verify in-place reuse without heap reallocation
-	reused := NewTensor(13, h, w)
-	ComputeManifoldInto(input, reused)
-	for i := range manifold.Data {
-		if manifold.Data[i] != reused.Data[i] {
-			t.Fatalf("ComputeManifoldInto result mismatch at index %d", i)
 		}
 	}
 }

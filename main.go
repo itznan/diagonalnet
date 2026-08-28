@@ -444,66 +444,88 @@ var (
 	}
 )
 
-// ExtractChannel0 copies the normalized base grayscale intensity I(x, y) into output Channel 0.
-// M_0(x, y) = I(x, y) for all x in [0, W-1], y in [0, H-1]
-func ExtractChannel0(input *Tensor, output *Tensor) {
-	HW := input.Height * input.Width
-	copy(output.Data[0:HW], input.Data[0:HW])
+// ComputeManifold transforms a flat grayscale image slice [h*w] into a 13-channel spatial difference manifold [13*h*w]
+// parallelized row-by-row across runtime.NumCPU() Goroutines.
+func ComputeManifold(input []float32, h, w int) []float32 {
+	out := make([]float32, 13*h*w)
+	ComputeManifoldIntoSlice(input, out, h, w)
+	return out
 }
 
-// ComputeManifoldInto transforms a 1-channel grayscale input tensor [1 x H x W]
-// into a 13-channel spatial difference manifold tensor [13 x H x W] in place with zero heap allocations.
+// ComputeManifoldIntoSlice executes the row-parallel 13-channel manifold transformation into a pre-allocated destination slice.
+func ComputeManifoldIntoSlice(input []float32, out []float32, h, w int) {
+	hw := h * w
+	numWorkers := runtime.NumCPU()
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
+	if numWorkers > h {
+		numWorkers = h
+	}
+
+	rowsPerWorker := (h + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
+
+	for workerID := 0; workerID < numWorkers; workerID++ {
+		startY := workerID * rowsPerWorker
+		endY := startY + rowsPerWorker
+		if endY > h {
+			endY = h
+		}
+		if startY >= endY {
+			continue
+		}
+
+		wg.Add(1)
+		go func(sy, ey int) {
+			defer wg.Done()
+			for y := sy; y < ey; y++ {
+				yOffset := y * w
+				for x := 0; x < w; x++ {
+					pixelIdx := yOffset + x
+					baseVal := input[pixelIdx]
+
+					// Channel 0: Base normalized grayscale intensity
+					out[pixelIdx] = baseVal
+
+					// Channels 1-4: Immediate diagonal absolute gradients
+					for ch := 0; ch < 4; ch++ {
+						dx := DiagonalOffsets[ch][0]
+						dy := DiagonalOffsets[ch][1]
+						nx := clamp(x+dx, 0, w-1)
+						ny := clamp(y+dy, 0, h-1)
+						neighborVal := input[ny*w+nx]
+						out[(ch+1)*hw+pixelIdx] = abs32(baseVal - neighborVal)
+					}
+
+					// Channels 5-12: 8-Way Chess Knight-Move differential operators
+					for k := 0; k < 8; k++ {
+						dx := KnightOffsets[k][0]
+						dy := KnightOffsets[k][1]
+						nx := clamp(x+dx, 0, w-1)
+						ny := clamp(y+dy, 0, h-1)
+						neighborVal := input[ny*w+nx]
+						out[(k+5)*hw+pixelIdx] = abs32(baseVal - neighborVal)
+					}
+				}
+			}
+		}(startY, endY)
+	}
+
+	wg.Wait()
+}
+
+// ComputeManifoldInto transforms a 1-channel Tensor into a 13-channel Tensor in-place using row-parallel multi-threading.
 func ComputeManifoldInto(input *Tensor, output *Tensor) {
 	H, W := input.Height, input.Width
-	HW := H * W
-
-	// Ensure output tensor has 13 channels and matching dimensions
 	if output.Channels < 13 || output.Height != H || output.Width != W {
 		*output = *NewTensor(13, H, W)
 	}
-
-	// Channel 0: Base normalized grayscale intensity I(x, y)
-	ExtractChannel0(input, output)
-
-	// Channels 1-4: Immediate diagonal absolute gradients
-	for ch := 0; ch < 4; ch++ {
-		dx := DiagonalOffsets[ch][0]
-		dy := DiagonalOffsets[ch][1]
-		chOffset := (ch + 1) * HW
-		for y := 0; y < H; y++ {
-			ny := clamp(y+dy, 0, H-1)
-			yOffset := y * W
-			nyOffset := ny * W
-			for x := 0; x < W; x++ {
-				nx := clamp(x+dx, 0, W-1)
-				baseVal := input.Data[yOffset+x]
-				neighborVal := input.Data[nyOffset+nx]
-				output.Data[chOffset+yOffset+x] = abs32(baseVal - neighborVal)
-			}
-		}
-	}
-
-	// Channels 5-12: 8-Way Chess Knight-Move absolute differences
-	for k := 0; k < 8; k++ {
-		dx := KnightOffsets[k][0]
-		dy := KnightOffsets[k][1]
-		chOffset := (k + 5) * HW
-		for y := 0; y < H; y++ {
-			ny := clamp(y+dy, 0, H-1)
-			yOffset := y * W
-			nyOffset := ny * W
-			for x := 0; x < W; x++ {
-				nx := clamp(x+dx, 0, W-1)
-				baseVal := input.Data[yOffset+x]
-				neighborVal := input.Data[nyOffset+nx]
-				output.Data[chOffset+yOffset+x] = abs32(baseVal - neighborVal)
-			}
-		}
-	}
+	ComputeManifoldIntoSlice(input.Data, output.Data, H, W)
 }
 
-// ComputeManifold creates and returns a new 13-channel manifold tensor from a 1-channel grayscale input.
-func ComputeManifold(input *Tensor) *Tensor {
+// ComputeManifoldTensor creates and returns a new 13-channel Tensor from a 1-channel input Tensor.
+func ComputeManifoldTensor(input *Tensor) *Tensor {
 	out := NewTensor(13, input.Height, input.Width)
 	ComputeManifoldInto(input, out)
 	return out
