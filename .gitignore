@@ -1,0 +1,9 @@
+# Binaries
+bin/*.exe
+bin/*
+!bin/.gitkeep
+
+# System & IDE
+.vscode/
+.idea/
+*.tmp
