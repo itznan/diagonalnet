@@ -256,3 +256,54 @@ func TestSaveAndLoadModelWeights(t *testing.T) {
 		}
 	}
 }
+
+// 5. 13-Channel Manifold Unit Tests
+func TestClamp(t *testing.T) {
+	if got := clamp(-5, 0, 10); got != 0 {
+		t.Fatalf("expected clamp(-5, 0, 10) == 0, got %d", got)
+	}
+	if got := clamp(15, 0, 10); got != 10 {
+		t.Fatalf("expected clamp(15, 0, 10) == 10, got %d", got)
+	}
+	if got := clamp(5, 0, 10); got != 5 {
+		t.Fatalf("expected clamp(5, 0, 10) == 5, got %d", got)
+	}
+}
+
+func Test13ChannelManifoldCalculus(t *testing.T) {
+	h, w := 10, 10
+	input := NewTensor(1, h, w)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			input.Set(0, y, x, float32(y*w+x)/100.0)
+		}
+	}
+
+	manifold := ComputeManifold(input)
+
+	// Verify dimensions: [13 x H x W]
+	c, mh, mw := manifold.Shape()
+	if c != 13 || mh != h || mw != w {
+		t.Fatalf("expected manifold shape (13, %d, %d), got (%d, %d, %d)", h, w, c, mh, mw)
+	}
+
+	// Verify Channel 0: Base intensity exact match
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			expected := input.Get(0, y, x)
+			got := manifold.Get(0, y, x)
+			if got != expected {
+				t.Fatalf("Channel 0 mismatch at (%d, %d): expected %f, got %f", y, x, expected, got)
+			}
+		}
+	}
+
+	// Verify in-place reuse without heap reallocation
+	reused := NewTensor(13, h, w)
+	ComputeManifoldInto(input, reused)
+	for i := range manifold.Data {
+		if manifold.Data[i] != reused.Data[i] {
+			t.Fatalf("ComputeManifoldInto result mismatch at index %d", i)
+		}
+	}
+}

@@ -394,7 +394,110 @@ func LoadModelWeights(path string, params []*Parameter) ([]string, error) {
 }
 
 // ============================================================================
-// 6. CLI ROUTING & EXECUTION HANDLERS
+// 6. 13-CHANNEL SPATIAL DIFFERENCE MANIFOLD CALCULUS
+// ============================================================================
+
+// Clamp restricts val within the closed interval [minVal, maxVal].
+func clamp(val, minVal, maxVal int) int {
+	if val < minVal {
+		return minVal
+	}
+	if val > maxVal {
+		return maxVal
+	}
+	return val
+}
+
+// Directional offset vectors for 13-channel spatial difference manifold.
+var (
+	// Channels 1-4: Immediate diagonals (45°, 135°, 225°, 315°)
+	DiagonalOffsets = [4][2]int{
+		{+1, -1}, // Ch 1: 45°  (top-right)
+		{-1, -1}, // Ch 2: 135° (top-left)
+		{-1, +1}, // Ch 3: 225° (bottom-left)
+		{+1, +1}, // Ch 4: 315° (bottom-right)
+	}
+
+	// Channels 5-12: Long-range chess knight-move differential operators
+	KnightOffsets = [8][2]int{
+		{+1, -2}, // Ch 5:  Knight 1
+		{+2, -1}, // Ch 6:  Knight 2
+		{+2, +1}, // Ch 7:  Knight 3
+		{+1, +2}, // Ch 8:  Knight 4
+		{-1, +2}, // Ch 9:  Knight 5
+		{-2, +1}, // Ch 10: Knight 6
+		{-2, -1}, // Ch 11: Knight 7
+		{-1, -2}, // Ch 12: Knight 8
+	}
+)
+
+// ExtractChannel0 copies the normalized base grayscale intensity I(x, y) into output Channel 0.
+// M_0(x, y) = I(x, y) for all x in [0, W-1], y in [0, H-1]
+func ExtractChannel0(input *Tensor, output *Tensor) {
+	HW := input.Height * input.Width
+	copy(output.Data[0:HW], input.Data[0:HW])
+}
+
+// ComputeManifoldInto transforms a 1-channel grayscale input tensor [1 x H x W]
+// into a 13-channel spatial difference manifold tensor [13 x H x W] in place with zero heap allocations.
+func ComputeManifoldInto(input *Tensor, output *Tensor) {
+	H, W := input.Height, input.Width
+	HW := H * W
+
+	// Ensure output tensor has 13 channels and matching dimensions
+	if output.Channels < 13 || output.Height != H || output.Width != W {
+		*output = *NewTensor(13, H, W)
+	}
+
+	// Channel 0: Base normalized grayscale intensity I(x, y)
+	ExtractChannel0(input, output)
+
+	// Channels 1-4: Immediate diagonal differences
+	for ch := 0; ch < 4; ch++ {
+		dx := DiagonalOffsets[ch][0]
+		dy := DiagonalOffsets[ch][1]
+		chOffset := (ch + 1) * HW
+		for y := 0; y < H; y++ {
+			ny := clamp(y+dy, 0, H-1)
+			yOffset := y * W
+			nyOffset := ny * W
+			for x := 0; x < W; x++ {
+				nx := clamp(x+dx, 0, W-1)
+				baseVal := input.Data[yOffset+x]
+				neighborVal := input.Data[nyOffset+nx]
+				output.Data[chOffset+yOffset+x] = neighborVal - baseVal
+			}
+		}
+	}
+
+	// Channels 5-12: Long-range knight-move differences
+	for k := 0; k < 8; k++ {
+		dx := KnightOffsets[k][0]
+		dy := KnightOffsets[k][1]
+		chOffset := (k + 5) * HW
+		for y := 0; y < H; y++ {
+			ny := clamp(y+dy, 0, H-1)
+			yOffset := y * W
+			nyOffset := ny * W
+			for x := 0; x < W; x++ {
+				nx := clamp(x+dx, 0, W-1)
+				baseVal := input.Data[yOffset+x]
+				neighborVal := input.Data[nyOffset+nx]
+				output.Data[chOffset+yOffset+x] = neighborVal - baseVal
+			}
+		}
+	}
+}
+
+// ComputeManifold creates and returns a new 13-channel manifold tensor from a 1-channel grayscale input.
+func ComputeManifold(input *Tensor) *Tensor {
+	out := NewTensor(13, input.Height, input.Width)
+	ComputeManifoldInto(input, out)
+	return out
+}
+
+// ============================================================================
+// 7. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
 
 func printHelp() {
