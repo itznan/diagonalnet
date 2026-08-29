@@ -5346,6 +5346,13 @@ func runServer(modelPath string, port int) {
 			model = NewDiagonNetModel(len(classNames), nil)
 			_, _ = LoadModelWeights(modelPath, model.Parameters())
 			fmt.Printf("    Successfully loaded weights for %d classes: %v\n", len(classNames), classNames)
+		} else {
+			// A checkpoint written by an older build has a different parameter layout and will
+			// fail here. Say so loudly: silently serving random weights looks like a broken
+			// model rather than a stale file.
+			fmt.Printf("    [WARNING] Could not load %s: %v\n", modelPath, err)
+			fmt.Println("    [WARNING] The checkpoint does not match the current network layout.")
+			fmt.Println("    [WARNING] Retrain before serving:  diagonnet -train -data data -profile normal")
 		}
 	}
 
@@ -5355,12 +5362,13 @@ func runServer(modelPath string, port int) {
 		if err == nil && ds.Metadata.NumClasses >= 2 {
 			classNames = ds.Metadata.Classes
 			model = NewDiagonNetModel(len(classNames), rand.New(rand.NewSource(42)))
-			fmt.Printf("    Initialized He weights for discovered dataset classes: %v\n", classNames)
+			fmt.Printf("    [WARNING] Serving UNTRAINED He-initialized weights for discovered classes: %v\n", classNames)
 		} else {
 			classNames = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
 			model = NewDiagonNetModel(10, rand.New(rand.NewSource(42)))
-			fmt.Printf("    Initialized He weights for standard digits (0-9)\n")
+			fmt.Println("    [WARNING] Serving UNTRAINED He-initialized weights for standard digits (0-9)")
 		}
+		fmt.Println("    [WARNING] Predictions will be random until the model is trained.")
 	}
 
 	if err := StartInferenceServer(model, classNames, port, true); err != nil {
