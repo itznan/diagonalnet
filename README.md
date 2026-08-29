@@ -131,9 +131,9 @@ flowchart TD
 ### 3. Trainable Parameter Abstraction & He Initialization
 - **Parameter Struct**: Unified memory encapsulation containing trainable weights (`Data`), analytical Jacobian gradient buffers (`Grad`), and Adam first/second moment accumulators (`M`, `V`).
 - **Kaiming Uniform (He Uniform)**:
-  $$\text{bound} = \sqrt{\frac{6}{\text{fan\_in}}}, \quad W \sim \mathcal{U}(-\text{bound}, +\text{bound})$$
+  $$\text{bound} = \sqrt{\frac{6}{\text{fan-in}}}, \quad W \sim \mathcal{U}(-\text{bound}, +\text{bound})$$
 - **Kaiming Normal (He Normal)**:
-  $$\sigma = \sqrt{\frac{2}{\text{fan\_in}}}, \quad z = \sigma \cdot \sqrt{-2 \ln u_1} \cos(2\pi u_2) \quad \text{(Box-Muller transform)}$$
+  $$\sigma = \sqrt{\frac{2}{\text{fan-in}}}, \quad z = \sigma \cdot \sqrt{-2 \ln u_1} \cos(2\pi u_2) \quad \text{(Box-Muller transform)}$$
 - **Zero & Constant Initialization**: Helper routines for bias vectors and deterministic unit testing.
 
 ### 4. Adam Optimizer & Step Learning Rate Decay Scheduler
