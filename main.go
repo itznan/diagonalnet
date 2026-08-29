@@ -1536,13 +1536,63 @@ func MorphErosion(src *image.Gray) *image.Gray {
 	return dst
 }
 
-// AugmentImage generates 15 comprehensive geometric and morphological variants per training image:
-// 1. Original image
-// 2-5. Rotations: -15 deg, +15 deg, -10 deg, +10 deg
-// 6-11. Shifts: (-3, 0), (+3, 0), (0, -3), (0, +3), (+2, +2), (-2, -2)
-// 12-13. Horizontal shears: -0.20, +0.20
-// 14. Morphological dilation (stroke thickening)
-// 15. Morphological erosion (stroke thinning)
+// ScaleImage rescales an *image.Gray about its center by independent horizontal and vertical
+// factors using backward mapping with bilinear sampling. Factors above 1.0 magnify the drawing.
+//
+// Only factors >= 1.0 are safe for augmentation here: the backward map reads from a sub-region of
+// the source, so nothing is ever sampled out of bounds. A factor below 1.0 would need source
+// pixels outside the canvas and would silently clip the drawing to black.
+func ScaleImage(src *image.Gray, scaleX, scaleY float64) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w == 0 || h == 0 || (scaleX == 1.0 && scaleY == 1.0) {
+		dst := image.NewGray(bounds)
+		draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
+		return dst
+	}
+	if scaleX <= 0 {
+		scaleX = 1.0
+	}
+	if scaleY <= 0 {
+		scaleY = 1.0
+	}
+
+	dst := image.NewGray(bounds)
+	cx := float64(w-1) / 2.0
+	cy := float64(h-1) / 2.0
+
+	for y := 0; y < h; y++ {
+		ySrc := cy + (float64(y)-cy)/scaleY
+		for x := 0; x < w; x++ {
+			xSrc := cx + (float64(x)-cx)/scaleX
+			pix := sampleBilinearGray(src, xSrc, ySrc)
+			dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, color.Gray{Y: pix})
+		}
+	}
+
+	return dst
+}
+
+// AugmentImage generates 15 geometric and morphological variants per training image:
+//  1. Original image
+//  2-5. Rotations: -15 deg, +15 deg, -10 deg, +10 deg
+//  6-9. Aspect / scale jitter: wider, taller, larger, and a mild wide-and-tall stretch
+//  10-11. Combined rotate + shear (slant with tilt)
+//  12-13. Horizontal shears: -0.20, +0.20
+//  14. Morphological dilation (stroke thickening)
+//  15. Morphological erosion (stroke thinning)
+//
+// Pure translations were deliberately removed. Every sample is bounding-box cropped and
+// re-centered downstream (FindBoundingBox -> PadAndCenter), which exactly undoes a translation,
+// so the six shift variants were producing byte-identical copies of the original. That meant 40%
+// of the training set was duplicated originals: it inflated the sample count, biased the model
+// toward the un-augmented pose, and contributed nothing to invariance. The replacements below all
+// change the bounding box shape or the stroke statistics, so they survive normalization and teach
+// real aspect-ratio, slant and stroke-width invariance.
 func AugmentImage(src *image.Gray) []*image.Gray {
 	if src == nil {
 		return nil
@@ -1560,13 +1610,15 @@ func AugmentImage(src *image.Gray) []*image.Gray {
 	variants = append(variants, RotateImage(src, -10.0))
 	variants = append(variants, RotateImage(src, 10.0))
 
-	// 6-11. Shifts
-	variants = append(variants, ShiftImage(src, -3, 0))
-	variants = append(variants, ShiftImage(src, 3, 0))
-	variants = append(variants, ShiftImage(src, 0, -3))
-	variants = append(variants, ShiftImage(src, 0, 3))
-	variants = append(variants, ShiftImage(src, 2, 2))
-	variants = append(variants, ShiftImage(src, -2, -2))
+	// 6-9. Aspect ratio and scale jitter (all factors >= 1.0, see ScaleImage)
+	variants = append(variants, ScaleImage(src, 1.25, 1.00)) // wider strokes/shape
+	variants = append(variants, ScaleImage(src, 1.00, 1.25)) // taller strokes/shape
+	variants = append(variants, ScaleImage(src, 1.15, 1.15)) // uniformly larger
+	variants = append(variants, ScaleImage(src, 1.30, 1.10)) // mild wide stretch
+
+	// 10-11. Combined tilt + slant, for poses neither rotation nor shear alone covers
+	variants = append(variants, ShearImage(RotateImage(src, -8.0), 0.12))
+	variants = append(variants, ShearImage(RotateImage(src, 8.0), -0.12))
 
 	// 12-13. Horizontal Shears
 	variants = append(variants, ShearImage(src, -0.20))
@@ -5039,7 +5091,7 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	loadAndPreprocess := func(items []ImageItem, label string, augment bool) []Sample {
 		augStr := "1x (Raw)"
 		if augment {
-			augStr = "15x (Rotations, Shifts, Shears, Dilation, Erosion)"
+			augStr = "15x (Rotations, Scale/Aspect, Shears, Dilation, Erosion)"
 		}
 		fmt.Printf(" Preprocessing %d %s samples [%s]... ", len(items), label, augStr)
 		start := time.Now()
