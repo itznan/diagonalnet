@@ -325,6 +325,7 @@ C:\diagonalnet\
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
+├── allinone.bat            # Self-elevating All-In-One master control suite
 ├── verify_deps.bat         # Dependency audit verification script
 ├── push.bat                # Git push automation script
 ├── pull.bat                # Git pull automation script
@@ -332,6 +333,7 @@ C:\diagonalnet\
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
 ├── data/                   # Dataset storage directory
 ├── scripts/                # Self-elevating Administrator utility batch scripts
+│   ├── allinone.bat        # Master control suite & end-to-end pipeline runner
 │   ├── audit.bat           # Automated dataset health & bounding box audit
 │   ├── benchmark.bat       # Multi-architecture benchmark runner (DiagonNet vs CNN vs MLP)
 │   ├── build.bat           # One-click static binary builder & test runner
