@@ -1507,18 +1507,13 @@ func MorphErosion(src *image.Gray) *image.Gray {
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			var minVal uint8 = 255
+			// Clamp the 3x3 window to the canvas (replicate-edge) instead of treating
+			// out-of-bounds neighbours as black. Zero-padding forced every border pixel to 0
+			// regardless of its value, carving a 1px black frame out of each eroded variant.
 			for dy := -1; dy <= 1; dy++ {
-				ny := y + dy
-				if ny < 0 || ny >= h {
-					minVal = 0
-					continue
-				}
+				ny := clamp(y+dy, 0, h-1)
 				for dx := -1; dx <= 1; dx++ {
-					nx := x + dx
-					if nx < 0 || nx >= w {
-						minVal = 0
-						continue
-					}
+					nx := clamp(x+dx, 0, w-1)
 					p := src.GrayAt(bounds.Min.X+nx, bounds.Min.Y+ny).Y
 					if p < minVal {
 						minVal = p
@@ -4344,6 +4339,9 @@ func RunArchitectureBenchmark(dataDir string, epochs int, batchSize int, lr floa
 					continue
 				}
 				bbox := FindBoundingBox(gray, 10)
+				if bbox == nil {
+					continue
+				}
 				centered := PadAndCenter(gray, bbox)
 				stretched := ContrastStretch(centered)
 				resized := ResizeBilinear(stretched, 100, 100)
@@ -5028,6 +5026,11 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 
 			for _, v := range variants {
 				bbox := FindBoundingBox(v, 10)
+				if bbox == nil {
+					// Blank variant: no foreground stroke survived. Feeding an all-zero image
+					// under a real class label is pure label noise, so drop it.
+					continue
+				}
 				centered := PadAndCenter(v, bbox)
 				stretched := ContrastStretch(centered)
 				resized := ResizeBilinear(stretched, 100, 100)
