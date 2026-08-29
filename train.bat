@@ -13,7 +13,10 @@ if %errorlevel% neq 0 (
 )
 
 :: 2. Set Working Directory to Repository Root
-cd /d "%~dp0\.."
+cd /d "%~dp0"
+if not exist "main.go" (
+    if exist "%~dp0\.." cd /d "%~dp0\.."
+)
 
 if not exist "weights" mkdir "weights"
 

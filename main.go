@@ -4958,10 +4958,33 @@ func runAudit(dataDir string) {
 	fmt.Println(">>> Dataset audit completed.")
 }
 
-func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSize int) {
+func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSize int, profile string) {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	profileTitle := "Standard Configuration"
+	switch profile {
+	case "fast", "quick":
+		epochs = 4
+		batchSize = 64
+		lr = 0.0025
+		profileTitle = "Fast Training Profile (4 Epochs, Batch: 64, LR: 0.0025)"
+	case "normal", "standard":
+		epochs = 12
+		batchSize = 32
+		lr = 0.0020
+		profileTitle = "Normal Standard Profile (12 Epochs, Batch: 32, LR: 0.0020) [Recommended]"
+	case "hardcore", "deep":
+		epochs = 30
+		batchSize = 32
+		lr = 0.0020
+		profileTitle = "Hardcore Deep Profile (30 Epochs, Batch: 32, LR: 0.0020, 15x Augmentation)"
+	case "manual", "custom":
+		profileTitle = "Manual Custom Profile"
+	}
+
 	fmt.Println("====================================================================================================")
 	fmt.Println("                         DIAGONNET DEEP LEARNING MODEL TRAINING PIPELINE")
 	fmt.Println("====================================================================================================")
+	fmt.Printf(" Training Profile  : %s\n", profileTitle)
 	fmt.Printf(" Dataset Directory : %s\n", dataDir)
 	fmt.Printf(" Target Model Path : %s\n", modelPath)
 	fmt.Printf(" Training Epochs   : %d\n", epochs)
@@ -5213,6 +5236,7 @@ func main() {
 	lr := fs.Float64("lr", 0.002, "Learning rate for optimization")
 	batchSize := fs.Int("batch", 64, "Mini-batch size for training")
 	port := fs.Int("port", 8081, "HTTP server listen port")
+	profileFlag := fs.String("profile", "", "Training profile template: fast, normal, hardcore, manual")
 
 	args := os.Args[1:]
 
@@ -5250,7 +5274,7 @@ func main() {
 	case *auditFlag:
 		runAudit(*dataDir)
 	case *trainFlag:
-		runTrain(*dataDir, *modelPath, *epochs, float32(*lr), *batchSize)
+		runTrain(*dataDir, *modelPath, *epochs, float32(*lr), *batchSize, *profileFlag)
 	case *serveFlag:
 		runServer(*modelPath, *port)
 	case *benchFlag:
@@ -5260,7 +5284,7 @@ func main() {
 		if fs.NArg() > 0 {
 			switch strings.ToLower(fs.Arg(0)) {
 			case "train":
-				runTrain(*dataDir, *modelPath, *epochs, float32(*lr), *batchSize)
+				runTrain(*dataDir, *modelPath, *epochs, float32(*lr), *batchSize, *profileFlag)
 				return
 			case "serve":
 				runServer(*modelPath, *port)

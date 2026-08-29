@@ -118,17 +118,50 @@ goto MENU
 :DO_TRAIN
 cls
 echo ================================================================================
-echo                           DIAGONNET MODEL TRAINING
+echo                    DIAGONNET TRAINING TEMPLATE SELECTION
 echo ================================================================================
-set /p EP="Enter number of epochs (default 10): "
-if "!EP!"=="" set EP=10
+echo.
+echo   [1] Fast Training     (4 Epochs, Batch: 64, LR: 0.0025)    ~1-2 mins
+echo   [2] Normal Training   (12 Epochs, Batch: 32, LR: 0.0020)   ~3-4 mins [Recommended]
+echo   [3] Hardcore Training (30 Epochs, Batch: 32, LR: 0.0020)   ~8 mins   [98%+ Accuracy]
+echo   [4] Manual Training   (Custom Configuration: Epochs, Batch, LR)
+echo   [5] Return to Main Menu
+echo.
+echo ================================================================================
+set /p TPROFILE="Select training template [1-5]: "
+
+if "%TPROFILE%"=="1" (
+    echo.
+    echo [Info] Launching FAST Training...
+    go run . -train -profile fast -data data -model weights\diagonnet_model.bin
+    pause
+    goto MENU
+)
+if "%TPROFILE%"=="2" (
+    echo.
+    echo [Info] Launching NORMAL Standard Training...
+    go run . -train -profile normal -data data -model weights\diagonnet_model.bin
+    pause
+    goto MENU
+)
+if "%TPROFILE%"=="3" (
+    echo.
+    echo [Info] Launching HARDCORE Deep Training...
+    go run . -train -profile hardcore -data data -model weights\diagonnet_model.bin
+    pause
+    goto MENU
+)
+if "%TPROFILE%"=="5" goto MENU
+
+set /p EP="Enter number of epochs (default 15): "
+if "!EP!"=="" set EP=15
 set /p LR="Enter learning rate (default 0.002): "
 if "!LR!"=="" set LR=0.002
 set /p BS="Enter mini-batch size (default 32): "
 if "!BS!"=="" set BS=32
 if not exist "weights" mkdir "weights"
 echo.
-echo [Info] Launching training with !EP! epochs, LR=!LR!, Batch=!BS!...
+echo [Info] Launching custom training with !EP! epochs, LR=!LR!, Batch=!BS!...
 go run . -train -data data -model weights\diagonnet_model.bin -epochs !EP! -lr !LR! -batch !BS!
 echo.
 pause

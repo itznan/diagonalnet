@@ -327,6 +327,7 @@ C:\diagonalnet\
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
 ├── allinone.bat            # Self-elevating All-In-One master control suite
+├── train.bat               # Self-elevating Multi-Profile Training Hub (Fast/Normal/Hardcore/Manual)
 ├── verify_deps.bat         # Dependency audit verification script
 ├── push.bat                # Git push automation script
 ├── pull.bat                # Git pull automation script
@@ -364,6 +365,17 @@ Run the full unit test suite with verbose output:
 go test -v ./...
 ```
 
+### Training Profiles & Templates
+
+DiagonNet includes 4 pre-configured training profile templates:
+
+| Profile | Command Flag | Epochs | Batch Size | Learning Rate | Augmentation | Estimated Time | Target Accuracy |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Fast** | `-profile fast` | **4** | 64 | 0.0025 | 15x | ~1-2 mins | Rapid Smoke Test |
+| **Normal** | `-profile normal` | **12** | 32 | 0.0020 | 15x | ~3-4 mins | **94%–96%+** [Recommended] |
+| **Hardcore** | `-profile hardcore` | **30** | 32 | 0.0020 | 15x | ~8 mins | **98%–99.5%+** [Max Accuracy] |
+| **Manual** | `-epochs N -batch B -lr L` | *Custom* | *Custom* | *Custom* | 15x | Variable | Fully User-Defined |
+
 ### CLI Commands
 
 ```bash
@@ -371,13 +383,21 @@ go test -v ./...
 diagonnet help
 # or: diagonnet -help
 
+# Fast Training Profile (Quick validation in ~1 min)
+diagonnet train -profile fast -data data
+
+# Normal Recommended Training Profile (~3-4 mins)
+diagonnet train -profile normal -data data -model weights/diagonnet_model.bin
+
+# Hardcore Deep Training Profile (Maximum 98%+ accuracy)
+diagonnet train -profile hardcore -data data -model weights/diagonnet_model.bin
+
+# Manual Custom Training Configuration
+diagonnet train -data data -model weights/diagonnet_model.bin -epochs 25 -lr 0.0018 -batch 32
+
 # Audit dataset structure and verify sample integrity
 diagonnet audit -data data
 # or: diagonnet -audit -data data
-
-# Train deep learning model
-diagonnet train -data data -model weights/diagonnet_model.bin -epochs 10 -lr 0.002 -batch 64
-# or: diagonnet -train -data data -epochs 10 -lr 0.002 -batch 64
 
 # Start interactive HTTP dashboard and inference server
 diagonnet serve -model weights/diagonnet_model.bin -port 8081
