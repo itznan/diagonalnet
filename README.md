@@ -220,8 +220,8 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
 ### 12. Best-Model Checkpointing & Multi-Class Evaluation Metrics
 - **Model Checkpointing (`ModelCheckpoint`)**: Tracks validation accuracy across training epochs, creates deep-copy snapshots of model weights when new maximum validation accuracy is achieved, and restores optimal parameters upon training completion (`Update`, `RestoreBest`).
 - **Comprehensive Multi-Class Metric Profiler**: Computes full $K \times K$ confusion matrices and analytical per-class and macro-averaged metrics (`ComputeEvaluationMetrics`, `PrintEvaluationReport`):
-  $$\text{Precision}_c = \frac{TP_c}{TP_c + FP_c}, \quad \text{Recall}_c = \frac{TP_c}{TP_c + FN_c}$$
-  $$\text{F1}_c = \frac{2 \cdot \text{Precision}_c \cdot \text{Recall}_c}{\text{Precision}_c + \text{Recall}_c}, \quad \text{Macro-F1} = \frac{1}{K}\sum_{c=0}^{K-1} \text{F1}_c$$
+  $$\text{Precision}_c = \frac{\text{TP}_c}{\text{TP}_c + \text{FP}_c}, \quad \text{Recall}_c = \frac{\text{TP}_c}{\text{TP}_c + \text{FN}_c}$$
+  $$\text{F1}_c = \frac{2 \cdot \text{Precision}_c \cdot \text{Recall}_c}{\text{Precision}_c + \text{Recall}_c}, \quad \text{Macro-F1} = \frac{1}{K} \sum_{c=0}^{K-1} \text{F1}_c$$
 
 ### 13. Architecture Benchmark Runner (DiagonNet vs CNN vs MLP)
 - **Baseline Models**: Standard 1-channel CNN (`SimpleCNNModel`) and dense Multi-Layer Perceptron (`SimpleMLPModel`).
