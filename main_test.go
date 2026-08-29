@@ -2460,6 +2460,62 @@ func TestInferenceServerHTTPRoutesAndPredict(t *testing.T) {
 	}
 }
 
+func TestMaxPool2DLayerForwardAndBackward(t *testing.T) {
+	// Create a 1 x 4 x 4 input tensor
+	input := NewTensor(1, 4, 4)
+	input.Data = []float32{
+		1, 3, 2, 4,
+		5, 2, 8, 1,
+		4, 7, 3, 6,
+		2, 1, 9, 5,
+	}
+
+	pool := NewMaxPool2DLayer(2)
+	out := pool.Forward(input)
+
+	if out.Channels != 1 || out.Height != 2 || out.Width != 2 {
+		t.Fatalf("expected shape [1 x 2 x 2], got [%d x %d x %d]", out.Channels, out.Height, out.Width)
+	}
+
+	// Expected max values in 2x2 windows:
+	// Top-left: max(1, 3, 5, 2) = 5 (idx 4)
+	// Top-right: max(2, 4, 8, 1) = 8 (idx 6)
+	// Bottom-left: max(4, 7, 2, 1) = 7 (idx 9)
+	// Bottom-right: max(3, 6, 9, 5) = 9 (idx 14)
+	expectedOut := []float32{5, 8, 7, 9}
+	expectedArgMax := []int{4, 6, 9, 14}
+
+	for i := range expectedOut {
+		if math.Abs(float64(out.Data[i]-expectedOut[i])) > 1e-5 {
+			t.Errorf("out[%d]: expected %f, got %f", i, expectedOut[i], out.Data[i])
+		}
+		if pool.ArgMax[i] != expectedArgMax[i] {
+			t.Errorf("argMax[%d]: expected %d, got %d", i, expectedArgMax[i], pool.ArgMax[i])
+		}
+	}
+
+	// Test Backward gradient routing
+	gradOut := NewTensor(1, 2, 2)
+	gradOut.Data = []float32{1.5, 2.5, 3.5, 4.5}
+
+	gradIn := pool.Backward(gradOut)
+	if gradIn.Channels != 1 || gradIn.Height != 4 || gradIn.Width != 4 {
+		t.Fatalf("expected gradIn shape [1 x 4 x 4], got [%d x %d x %d]", gradIn.Channels, gradIn.Height, gradIn.Width)
+	}
+
+	expectedGradIn := make([]float32, 16)
+	expectedGradIn[4] = 1.5
+	expectedGradIn[6] = 2.5
+	expectedGradIn[9] = 3.5
+	expectedGradIn[14] = 4.5
+
+	for i := range expectedGradIn {
+		if math.Abs(float64(gradIn.Data[i]-expectedGradIn[i])) > 1e-5 {
+			t.Errorf("gradIn[%d]: expected %f, got %f", i, expectedGradIn[i], gradIn.Data[i])
+		}
+	}
+}
+
 
 
 

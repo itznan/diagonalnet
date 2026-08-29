@@ -10,8 +10,10 @@
 2. Direct Package Imports (`go list -f "{{range .Imports}}{{println .}}{{end}}" ./...`):
    bufio                  (Go Standard Library)
    bytes                  (Go Standard Library)
+   crypto/sha256          (Go Standard Library)
    encoding/base64        (Go Standard Library)
    encoding/binary        (Go Standard Library)
+   encoding/hex           (Go Standard Library)
    encoding/json          (Go Standard Library)
    errors                 (Go Standard Library)
    flag                   (Go Standard Library)

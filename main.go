@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -1679,18 +1681,36 @@ type ClassAuditStats struct {
 	AvgDensity   float64
 }
 
+// DuplicateGroup tracks duplicate files sharing identical SHA-256 hash digests.
+type DuplicateGroup struct {
+	Hash  string
+	Paths []string
+}
+
+// ComputeFileSHA256 computes the hexadecimal SHA-256 hash of a file.
+func ComputeFileSHA256(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
+}
+
 // DatasetAuditReport aggregates health metrics across all classes in the dataset.
 type DatasetAuditReport struct {
-	DataDir      string
-	NumClasses   int
-	Classes      []string
-	TotalSamples int
-	ValidCount   int
-	CorruptCount int
-	BlankCount   int
-	TinyCount    int
-	ClassStats   []ClassAuditStats
-	Results      []ImageAuditResult
+	DataDir        string
+	NumClasses     int
+	Classes        []string
+	TotalSamples   int
+	ValidCount     int
+	CorruptCount   int
+	BlankCount     int
+	TinyCount      int
+	DuplicateFiles int
+	Duplicates     []DuplicateGroup
+	ClassStats     []ClassAuditStats
+	Results        []ImageAuditResult
 }
 
 // AuditImage performs quality and bounding box analysis on a single image file:
@@ -1805,11 +1825,16 @@ func AuditDataset(dataDir string) (*DatasetAuditReport, error) {
 		TotalSamples: len(ds.Samples),
 	}
 
+	fileHashMap := make(map[string][]string)
 	classResults := make(map[int][]ImageAuditResult)
 	for _, sample := range ds.Samples {
 		res := AuditImage(sample.Path, sample.Class, sample.ClassIndex)
 		report.Results = append(report.Results, res)
 		classResults[sample.ClassIndex] = append(classResults[sample.ClassIndex], res)
+
+		if hash, err := ComputeFileSHA256(sample.Path); err == nil {
+			fileHashMap[hash] = append(fileHashMap[hash], sample.Path)
+		}
 
 		if res.IsCorrupt {
 			report.CorruptCount++
@@ -1821,6 +1846,20 @@ func AuditDataset(dataDir string) (*DatasetAuditReport, error) {
 			report.ValidCount++
 		}
 	}
+
+	// Aggregate duplicate SHA-256 groups
+	for hash, paths := range fileHashMap {
+		if len(paths) > 1 {
+			report.Duplicates = append(report.Duplicates, DuplicateGroup{
+				Hash:  hash,
+				Paths: paths,
+			})
+			report.DuplicateFiles += len(paths) - 1
+		}
+	}
+	sort.Slice(report.Duplicates, func(i, j int) bool {
+		return report.Duplicates[i].Hash < report.Duplicates[j].Hash
+	})
 
 	for idx, clsName := range ds.Metadata.Classes {
 		items := classResults[idx]
@@ -1872,8 +1911,8 @@ func PrintAuditReport(report *DatasetAuditReport) {
 	fmt.Println("====================================================================================================")
 	fmt.Printf(" Target Directory   : %s\n", report.DataDir)
 	fmt.Printf(" Discovered Classes : %d %v (K=%d)\n", report.NumClasses, report.Classes, report.NumClasses)
-	fmt.Printf(" Total Samples      : %d | Clean Valid: %d | Corrupt: %d | Blank: %d | Tiny Outliers: %d\n",
-		report.TotalSamples, report.ValidCount, report.CorruptCount, report.BlankCount, report.TinyCount)
+	fmt.Printf(" Total Samples      : %d | Clean Valid: %d | Corrupt: %d | Blank: %d | Tiny Outliers: %d | Duplicates: %d\n",
+		report.TotalSamples, report.ValidCount, report.CorruptCount, report.BlankCount, report.TinyCount, report.DuplicateFiles)
 	fmt.Println("----------------------------------------------------------------------------------------------------")
 	fmt.Printf(" %-15s | %7s | %5s | %7s | %5s | %4s | %-14s | %-10s | %s\n",
 		"Class Name", "Samples", "Valid", "Corrupt", "Blank", "Tiny", "Avg BBox (WxH)", "Avg Aspect", "Stroke Dens")
@@ -1906,6 +1945,17 @@ func PrintAuditReport(report *DatasetAuditReport) {
 		"SUMMARY", report.TotalSamples, report.ValidCount, report.CorruptCount, report.BlankCount, report.TinyCount,
 		avgW, avgH, avgAspect, avgDens*100.0)
 	fmt.Println("====================================================================================================")
+
+	if len(report.Duplicates) > 0 {
+		fmt.Printf("\n [DUPLICATES DETECTED] %d exact duplicate file instance(s) found across dataset:\n", report.DuplicateFiles)
+		for _, dup := range report.Duplicates {
+			fmt.Printf("  • SHA-256 [%s...]:\n", dup.Hash[:16])
+			for _, p := range dup.Paths {
+				fmt.Printf("      - %s\n", p)
+			}
+		}
+		fmt.Println("====================================================================================================")
+	}
 }
 
 // ============================================================================
@@ -2380,6 +2430,102 @@ func (l *Conv2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
 		}(startCin, endCin)
 	}
 	wgIn.Wait()
+}
+
+// MaxPool2DLayer performs 2D max pooling with ArgMax coordinate caching for exact sparse backpropagation.
+type MaxPool2DLayer struct {
+	KernelSize int
+	ArgMax     []int   // Cached 1D input indices for the argmax of each output position
+	LastInput  *Tensor // Cached input tensor
+	LastOutput *Tensor // Cached output tensor
+}
+
+// NewMaxPool2DLayer constructs a MaxPool2DLayer.
+func NewMaxPool2DLayer(kernelSize int) *MaxPool2DLayer {
+	if kernelSize <= 0 {
+		kernelSize = 2
+	}
+	return &MaxPool2DLayer{
+		KernelSize: kernelSize,
+	}
+}
+
+// Forward computes max pooling over non-overlapping KxK spatial windows and caches ArgMax indices.
+func (l *MaxPool2DLayer) Forward(input *Tensor) *Tensor {
+	l.LastInput = input
+	k := l.KernelSize
+	c := input.Channels
+	hIn := input.Height
+	wIn := input.Width
+
+	hOut := hIn / k
+	wOut := wIn / k
+	if hOut <= 0 {
+		hOut = 1
+	}
+	if wOut <= 0 {
+		wOut = 1
+	}
+
+	output := NewTensor(c, hOut, wOut)
+	l.LastOutput = output
+	l.ArgMax = make([]int, len(output.Data))
+
+	for ch := 0; ch < c; ch++ {
+		inChOffset := ch * (hIn * wIn)
+		outChOffset := ch * (hOut * wOut)
+
+		for y := 0; y < hOut; y++ {
+			inYStart := y * k
+			outRowOffset := outChOffset + y*wOut
+
+			for x := 0; x < wOut; x++ {
+				inXStart := x * k
+				outIdx := outRowOffset + x
+
+				maxVal := float32(-math.MaxFloat32)
+				maxIdx := -1
+
+				for ky := 0; ky < k; ky++ {
+					iy := inYStart + ky
+					if iy >= hIn {
+						continue
+					}
+					inRowOffset := inChOffset + iy*wIn
+
+					for kx := 0; kx < k; kx++ {
+						ix := inXStart + kx
+						if ix >= wIn {
+							continue
+						}
+						currIdx := inRowOffset + ix
+						val := input.Data[currIdx]
+
+						if val > maxVal || maxIdx == -1 {
+							maxVal = val
+							maxIdx = currIdx
+						}
+					}
+				}
+
+				output.Data[outIdx] = maxVal
+				l.ArgMax[outIdx] = maxIdx
+			}
+		}
+	}
+
+	return output
+}
+
+// Backward routes output gradients directly to the cached ArgMax locations in input space.
+func (l *MaxPool2DLayer) Backward(gradOutput *Tensor) *Tensor {
+	gradInput := NewTensor(l.LastInput.Channels, l.LastInput.Height, l.LastInput.Width)
+	for i, goVal := range gradOutput.Data {
+		if i < len(l.ArgMax) && l.ArgMax[i] >= 0 && l.ArgMax[i] < len(gradInput.Data) {
+			gradInput.Data[l.ArgMax[i]] += goVal
+		}
+	}
+	return gradInput
 }
 
 // AdaptiveAvgPool2DLayer dynamically pools arbitrary input feature dimensions to a fixed [TargetH x TargetW] output.
@@ -4370,6 +4516,10 @@ const webAppHTML = `<!DOCTYPE html>
       </div>
       <div class="controls">
         <button class="btn-clear" id="btnClear">Clear Canvas (C)</button>
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+          <span>Brush:</span>
+          <input id="brushSize" type="range" min="12" max="36" value="22" style="accent-color: var(--accent-blue); cursor: pointer; width: 80px;">
+        </div>
         <button class="btn-predict" id="btnPredict">Predict</button>
       </div>
       <div class="shortcut-hint">Shortcuts: <b>C</b> / <b>Esc</b> to Clear | Real-Time Continuous Autograd</div>
@@ -4394,12 +4544,19 @@ const webAppHTML = `<!DOCTYPE html>
 <script>
   const canvas = document.getElementById('paintCanvas');
   const ctx = canvas.getContext('2d');
+  const brushSlider = document.getElementById('brushSize');
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, 400, 400);
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 22;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+
+  if (brushSlider) {
+    brushSlider.addEventListener('input', () => {
+      ctx.lineWidth = parseInt(brushSlider.value);
+    });
+  }
 
   let drawing = false;
   let hasDrawn = false;
@@ -4825,31 +4982,45 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	// 2. Stratified Train / Validation Split (80% Train, 20% Val)
 	trainItems, valItems := TrainTestSplit(ds.Samples, 0.20, 42)
 
-	loadAndPreprocess := func(items []ImageItem, label string) []Sample {
-		fmt.Printf(" Preprocessing %d %s samples (Bounding Box, Center Pad, Contrast Stretch, 100x100 Resample)... ", len(items), label)
+	loadAndPreprocess := func(items []ImageItem, label string, augment bool) []Sample {
+		augStr := "1x (Raw)"
+		if augment {
+			augStr = "15x (Rotations, Shifts, Shears, Dilation, Erosion)"
+		}
+		fmt.Printf(" Preprocessing %d %s samples [%s]... ", len(items), label, augStr)
 		start := time.Now()
-		samples := make([]Sample, 0, len(items))
+		samples := make([]Sample, 0, len(items)*15)
 		for _, it := range items {
 			gray, err := LoadImageFromFile(it.Path)
 			if err != nil {
 				continue
 			}
-			bbox := FindBoundingBox(gray, 10)
-			centered := PadAndCenter(gray, bbox)
-			stretched := ContrastStretch(centered)
-			resized := ResizeBilinear(stretched, 100, 100)
-			tensor := GrayImageToTensor(resized)
-			samples = append(samples, Sample{
-				Input:       tensor,
-				TargetClass: it.ClassIndex,
-			})
+
+			var variants []*image.Gray
+			if augment {
+				variants = AugmentImage(gray)
+			} else {
+				variants = []*image.Gray{gray}
+			}
+
+			for _, v := range variants {
+				bbox := FindBoundingBox(v, 10)
+				centered := PadAndCenter(v, bbox)
+				stretched := ContrastStretch(centered)
+				resized := ResizeBilinear(stretched, 100, 100)
+				tensor := GrayImageToTensor(resized)
+				samples = append(samples, Sample{
+					Input:       tensor,
+					TargetClass: it.ClassIndex,
+				})
+			}
 		}
 		fmt.Printf("Done (%.2fs | %d clean samples)\n", time.Since(start).Seconds(), len(samples))
 		return samples
 	}
 
-	trainSamples := loadAndPreprocess(trainItems, "training")
-	valSamples := loadAndPreprocess(valItems, "validation")
+	trainSamples := loadAndPreprocess(trainItems, "training", true)
+	valSamples := loadAndPreprocess(valItems, "validation", false)
 
 	if len(trainSamples) == 0 || len(valSamples) == 0 {
 		fmt.Println(">>> [Error] Insufficient valid training or validation samples.")

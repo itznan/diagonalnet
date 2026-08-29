@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
-[![Tests](https://img.shields.io/badge/Tests-56%20Passing-success)](main_test.go)
+[![Tests](https://img.shields.io/badge/Tests-57%20Passing-success)](main_test.go)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](README.md)
 
 > **Pure Go Zero-Dependency Deep Learning Engine, 13-Channel Spatial Difference Manifold Calculus & High-Performance CPU Runtime.**
@@ -309,6 +309,7 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 | `TestEmbeddedWebAppHTML` | Embedded HTML5 canvas web app structure, controls, and API integration checks | `PASS` |
 | `TestPreprocessWebImagePipeline` | Web drawing bounding box extraction, proportional padding, and 100x100 resampling | `PASS` |
 | `TestInferenceServerHTTPRoutesAndPredict` | HTTP server GET /, GET /api/info, and POST /api/predict real-time latency verification | `PASS` |
+| `TestMaxPool2DLayerForwardAndBackward` | 2D Max pooling forward spatial downsampling and exact sparse ArgMax backpropagation | `PASS` |
 
 ---
 
