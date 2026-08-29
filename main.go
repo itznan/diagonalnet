@@ -3308,16 +3308,49 @@ type Sample struct {
 }
 
 // DiagonNetModel represents the complete neural network architecture for DiagonNet:
-// 13-Channel Manifold -> Conv2D (13->16, K=3, S=2, P=1) -> ReLU -> AdaptiveAvgPool (4x4) -> Dropout (p=0.2) -> Linear (256->K)
+//
+//	13-Channel Manifold [13 x S x S]
+//	  -> Conv2D (13->16, K=3, S=1, P=1) -> ReLU -> MaxPool (2x2)
+//	  -> Conv2D (16->32, K=3, S=1, P=1) -> ReLU -> MaxPool (2x2)
+//	  -> AdaptiveAvgPool (4x4)                     [32*4*4 = 512 features]
+//	  -> Linear (512->128) -> ReLU -> Dropout (p=0.2)
+//	  -> Linear (128->K)
+//
+// Two stride-1 convolution stages separated by max pooling give the network a genuine
+// feature hierarchy (edges -> stroke junctions -> shape parts), and the 128-unit hidden layer
+// makes the classifier head non-linear. The previous single Conv(stride 2) -> AvgPool -> Linear
+// stack collapsed each feature map into 16 coarse 4x4 averages and then fed them straight to a
+// linear readout, which is close to a linear model over blurred features and badly underfits.
+// Dropout now sits after the hidden ReLU (regularizing a learned representation) rather than
+// directly on the pooled convolution features, where it was just injecting input noise.
 type DiagonNetModel struct {
 	NumClasses int
-	Conv       *Conv2DLayer
-	ReLU       *ReLULayer
-	Pool       *AdaptiveAvgPool2DLayer
-	Dropout    *DropoutLayer
-	FC         *LinearLayer
-	LossFn     *CategoricalCrossEntropyLoss
+
+	Conv1 *Conv2DLayer
+	ReLU1 *ReLULayer
+	Pool1 *MaxPool2DLayer
+
+	Conv2 *Conv2DLayer
+	ReLU2 *ReLULayer
+	Pool2 *MaxPool2DLayer
+
+	Pool *AdaptiveAvgPool2DLayer
+
+	FC1     *LinearLayer
+	ReLU3   *ReLULayer
+	Dropout *DropoutLayer
+	FC      *LinearLayer
+
+	LossFn *CategoricalCrossEntropyLoss
 }
+
+// DiagonNet feature-stack dimensions.
+const (
+	diagonConv1Channels = 16
+	diagonConv2Channels = 32
+	diagonPoolTarget    = 4
+	diagonHiddenUnits   = 128
+)
 
 // NewDiagonNetModel constructs a DiagonNet classification model configured dynamically for K classes.
 func NewDiagonNetModel(numClasses int, rng *rand.Rand) *DiagonNetModel {
@@ -3328,35 +3361,46 @@ func NewDiagonNetModel(numClasses int, rng *rand.Rand) *DiagonNetModel {
 		rng = rand.New(rand.NewSource(42))
 	}
 
-	convRNG := rand.New(rand.NewSource(rng.Int63()))
-	fcRNG := rand.New(rand.NewSource(rng.Int63()))
+	conv1RNG := rand.New(rand.NewSource(rng.Int63()))
+	conv2RNG := rand.New(rand.NewSource(rng.Int63()))
+	fc1RNG := rand.New(rand.NewSource(rng.Int63()))
+	fc2RNG := rand.New(rand.NewSource(rng.Int63()))
 	dropRNG := rand.New(rand.NewSource(rng.Int63()))
 
-	conv := NewConv2DLayer(13, 16, 3, 2, 1, convRNG)
-	relu := NewReLULayer()
-	pool := NewAdaptiveAvgPool2DLayer(4, 4)
-	dropout := NewDropoutLayer(0.2, dropRNG)
-	fc := NewLinearLayer(16*4*4, numClasses, fcRNG)
-	lossFn := NewCategoricalCrossEntropyLoss()
+	flatDim := diagonConv2Channels * diagonPoolTarget * diagonPoolTarget
 
 	return &DiagonNetModel{
 		NumClasses: numClasses,
-		Conv:       conv,
-		ReLU:       relu,
-		Pool:       pool,
-		Dropout:    dropout,
-		FC:         fc,
-		LossFn:     lossFn,
+
+		Conv1: NewConv2DLayer(13, diagonConv1Channels, 3, 1, 1, conv1RNG),
+		ReLU1: NewReLULayer(),
+		Pool1: NewMaxPool2DLayer(2),
+
+		Conv2: NewConv2DLayer(diagonConv1Channels, diagonConv2Channels, 3, 1, 1, conv2RNG),
+		ReLU2: NewReLULayer(),
+		Pool2: NewMaxPool2DLayer(2),
+
+		Pool: NewAdaptiveAvgPool2DLayer(diagonPoolTarget, diagonPoolTarget),
+
+		FC1:     NewLinearLayer(flatDim, diagonHiddenUnits, fc1RNG),
+		ReLU3:   NewReLULayer(),
+		Dropout: NewDropoutLayer(0.2, dropRNG),
+		FC:      NewLinearLayer(diagonHiddenUnits, numClasses, fc2RNG),
+
+		LossFn: NewCategoricalCrossEntropyLoss(),
 	}
 }
 
 // Parameters returns all trainable parameter buffers in the model.
+//
+// The order is part of the on-disk checkpoint format: SaveModelWeights and LoadModelWeights walk
+// this slice sequentially, so appending or reordering entries invalidates existing .bin files.
 func (m *DiagonNetModel) Parameters() []*Parameter {
 	return []*Parameter{
-		m.Conv.Weights,
-		m.Conv.Bias,
-		m.FC.Weights,
-		m.FC.Biases,
+		m.Conv1.Weights, m.Conv1.Bias,
+		m.Conv2.Weights, m.Conv2.Bias,
+		m.FC1.Weights, m.FC1.Biases,
+		m.FC.Weights, m.FC.Biases,
 	}
 }
 
@@ -3375,39 +3419,21 @@ func (m *DiagonNetModel) SetTraining(training bool) {
 // CloneForWorker constructs an isolated model replica for a parallel batch worker,
 // with independent gradient and layer state buffers.
 func (m *DiagonNetModel) CloneForWorker(workerID int) *DiagonNetModel {
+	// Each replica gets its own RNG stream so the workers draw independent dropout masks,
+	// while staying reproducible across runs for a given worker id.
 	rng := rand.New(rand.NewSource(int64(1000 + workerID*37)))
-	replica := &DiagonNetModel{
-		NumClasses: m.NumClasses,
-		Conv: &Conv2DLayer{
-			InChannels:  m.Conv.InChannels,
-			OutChannels: m.Conv.OutChannels,
-			KernelSize:  m.Conv.KernelSize,
-			Stride:      m.Conv.Stride,
-			Padding:     m.Conv.Padding,
-			Weights:     NewParameter(m.Conv.Weights.Size()),
-			Bias:        NewParameter(m.Conv.Bias.Size()),
-		},
-		ReLU:    NewReLULayer(),
-		Pool:    NewAdaptiveAvgPool2DLayer(m.Pool.TargetH, m.Pool.TargetW),
-		Dropout: NewDropoutLayer(m.Dropout.DropRate, rng),
-		FC: &LinearLayer{
-			Weights:   NewParameter(m.FC.Weights.Size()),
-			Biases:    NewParameter(m.FC.Biases.Size()),
-			InputDim:  m.FC.InputDim,
-			OutputDim: m.FC.OutputDim,
-		},
-		LossFn: NewCategoricalCrossEntropyLoss(),
-	}
+	replica := NewDiagonNetModel(m.NumClasses, rng)
 	replica.SyncWeightsFrom(m)
 	return replica
 }
 
 // SyncWeightsFrom copies trainable weight vectors from the master model into the replica.
 func (m *DiagonNetModel) SyncWeightsFrom(master *DiagonNetModel) {
-	copy(m.Conv.Weights.Data, master.Conv.Weights.Data)
-	copy(m.Conv.Bias.Data, master.Conv.Bias.Data)
-	copy(m.FC.Weights.Data, master.FC.Weights.Data)
-	copy(m.FC.Biases.Data, master.FC.Biases.Data)
+	dst := m.Parameters()
+	src := master.Parameters()
+	for i := range dst {
+		copy(dst[i].Data, src[i].Data)
+	}
 }
 
 // SnapshotWeights creates deep copies of all trainable parameter weights in the model.
@@ -3433,8 +3459,9 @@ func (m *DiagonNetModel) RestoreWeights(snapshot [][]float32) {
 	}
 }
 
-// Forward executes the full model inference forward pass, returning unnormalized class logits.
-func (m *DiagonNetModel) Forward(input *Tensor) []float32 {
+// forwardFeatures runs the shared convolutional trunk and dense head, returning the class logits.
+// The layers cache their own activations, so ForwardBackward can immediately backpropagate.
+func (m *DiagonNetModel) forwardFeatures(input *Tensor) []float32 {
 	var manifold *Tensor
 	if input.Channels == 1 {
 		manifold = ComputeManifoldTensor(input)
@@ -3442,30 +3469,32 @@ func (m *DiagonNetModel) Forward(input *Tensor) []float32 {
 		manifold = input
 	}
 
-	convOut := m.Conv.Forward(manifold)
-	reluOut := m.ReLU.ForwardTensor(convOut)
-	poolOut := m.Pool.Forward(reluOut)
-	dropOut := m.Dropout.Forward(poolOut.Data)
-	logits := m.FC.Forward(dropOut)
-	return logits
+	// Convolutional feature hierarchy
+	c1 := m.Conv1.Forward(manifold) // [16 x S x S]
+	a1 := m.ReLU1.ForwardTensor(c1)
+	p1 := m.Pool1.Forward(a1)    // [16 x S/2 x S/2]
+	c2 := m.Conv2.Forward(p1)    // [32 x S/2 x S/2]
+	a2 := m.ReLU2.ForwardTensor(c2)
+	p2 := m.Pool2.Forward(a2)    // [32 x S/4 x S/4]
+	pooled := m.Pool.Forward(p2) // [32 x 4 x 4]
+
+	// Non-linear dense classifier head
+	h := m.FC1.Forward(pooled.Data) // [128]
+	hAct := m.ReLU3.Forward(h)
+	hDrop := m.Dropout.Forward(hAct)
+	return m.FC.Forward(hDrop) // [K]
+}
+
+// Forward executes the full model inference forward pass, returning unnormalized class logits.
+func (m *DiagonNetModel) Forward(input *Tensor) []float32 {
+	return m.forwardFeatures(input)
 }
 
 // ForwardBackward executes forward evaluation, cross-entropy loss computation, and full analytical Jacobian
 // backpropagation through all layers, accumulating gradients into parameter buffers.
 func (m *DiagonNetModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
-	var manifold *Tensor
-	if input.Channels == 1 {
-		manifold = ComputeManifoldTensor(input)
-	} else {
-		manifold = input
-	}
-
 	// 1. Forward Pass
-	convOut := m.Conv.Forward(manifold)
-	reluOut := m.ReLU.ForwardTensor(convOut)
-	poolOut := m.Pool.Forward(reluOut)
-	dropOut := m.Dropout.Forward(poolOut.Data)
-	logits := m.FC.Forward(dropOut)
+	logits := m.forwardFeatures(input)
 
 	// 2. Numerically stable Softmax & Categorical Cross-Entropy Loss
 	probs := Softmax(logits)
@@ -3474,26 +3503,30 @@ func (m *DiagonNetModel) ForwardBackward(input *Tensor, targetClass int) (float3
 	// 3. Analytical pre-softmax logit gradient: dL/dz_i = p_i - 1(i == target)
 	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
 
-	// 4. Dense Head Analytical Backpropagation
-	gradDrop := m.FC.Backward(gradLogits)
+	// 4. Dense head: Linear -> Dropout -> ReLU -> Linear
+	gradDrop := m.FC.Backward(gradLogits)    // [128]
+	gradAct := m.Dropout.Backward(gradDrop)  // [128]
+	gradHidden := m.ReLU3.Backward(gradAct)  // [128]
+	gradPooled := m.FC1.Backward(gradHidden) // [32*4*4]
 
-	// 5. Inverted Dropout Analytical Backpropagation
-	gradPool := m.Dropout.Backward(gradDrop)
-
-	// 6. Adaptive Average Pooling Analytical Backpropagation
-	poolGradTensor := &Tensor{
-		Data:     gradPool,
-		Channels: m.Conv.OutChannels,
+	// 5. Adaptive Average Pooling Analytical Backpropagation
+	pooledGrad := &Tensor{
+		Data:     gradPooled,
+		Channels: m.Conv2.OutChannels,
 		Height:   m.Pool.TargetH,
 		Width:    m.Pool.TargetW,
 	}
-	gradReLU := m.Pool.Backward(poolGradTensor)
+	gradP2 := m.Pool.Backward(pooledGrad) // [32 x S/4 x S/4]
 
-	// 7. ReLU Activation Analytical Backpropagation
-	gradConv := m.ReLU.BackwardTensor(gradReLU)
+	// 6. Second convolutional stage: MaxPool -> ReLU -> Conv
+	gradA2 := m.Pool2.Backward(gradP2)
+	gradC2 := m.ReLU2.BackwardTensor(gradA2)
+	gradP1 := m.Conv2.Backward(gradC2) // [16 x S/2 x S/2]
 
-	// 8. 2D Convolution Analytical Backpropagation (dL/dW, dL/dB, dL/dX)
-	m.Conv.Backward(gradConv)
+	// 7. First convolutional stage: MaxPool -> ReLU -> Conv
+	gradA1 := m.Pool1.Backward(gradP1)
+	gradC1 := m.ReLU1.BackwardTensor(gradA1)
+	m.Conv1.Backward(gradC1)
 
 	return loss, probs
 }
@@ -5156,7 +5189,13 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	checkpoint := NewModelCheckpoint()
 
 	fmt.Println("----------------------------------------------------------------------------------------------------")
-	fmt.Printf(" Model Architecture: 13-Manifold -> Conv2D(13->16, K=3, S=2) -> ReLU -> AdaptiveAvgPool(4x4) -> Linear(256->%d)\n", numClasses)
+	fmt.Printf(" Input Resolution  : %dx%d (bbox-cropped, centered, contrast-stretched)\n", InputSize, InputSize)
+	fmt.Printf(" Model Architecture: 13-Manifold -> Conv(13->%d,K3,S1) -> ReLU -> MaxPool2 -> Conv(%d->%d,K3,S1) -> ReLU -> MaxPool2\n",
+		diagonConv1Channels, diagonConv1Channels, diagonConv2Channels)
+	fmt.Printf("                     -> AdaptiveAvgPool(%dx%d) -> Linear(%d->%d) -> ReLU -> Dropout(0.2) -> Linear(%d->%d)\n",
+		diagonPoolTarget, diagonPoolTarget,
+		diagonConv2Channels*diagonPoolTarget*diagonPoolTarget, diagonHiddenUnits,
+		diagonHiddenUnits, numClasses)
 	fmt.Printf(" Trainable Parameters: %d float32 weights and biases\n", paramCount)
 	fmt.Println("----------------------------------------------------------------------------------------------------")
 	fmt.Println(" Starting Data-Parallel Training Across CPU Cores...")

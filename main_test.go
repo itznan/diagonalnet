@@ -2086,8 +2086,11 @@ func TestBatchTrainerDataParallelTraining(t *testing.T) {
 
 	// Evaluate on dataset
 	valLoss, valAcc := trainer.Evaluate(batch)
-	if valLoss <= 0 {
-		t.Fatalf("expected positive validation loss, got %f", valLoss)
+	// Cross-entropy is non-negative, but this 8-sample toy batch is separable enough that the
+	// network drives it to ~0 within 5 steps, at which point -log(p) lands on float noise a
+	// hair either side of zero. Only a genuinely negative loss indicates a broken reduction.
+	if valLoss < -1e-6 {
+		t.Fatalf("expected non-negative validation loss, got %f", valLoss)
 	}
 	if valAcc < 0 || valAcc > 1.0 {
 		t.Fatalf("invalid accuracy: %f", valAcc)
