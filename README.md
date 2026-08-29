@@ -328,10 +328,17 @@ C:\diagonalnet\
 ├── verify_deps.bat         # Dependency audit verification script
 ├── push.bat                # Git push automation script
 ├── pull.bat                # Git pull automation script
-├── assets/                 # Visual assets and documentation diagrams
+├── assets/                 # Visual assets, manifolds, comparison CSVs
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
 ├── data/                   # Dataset storage directory
-└── weights/                # Binary model weights storage
+├── scripts/                # Self-elevating Administrator utility batch scripts
+│   ├── audit.bat           # Automated dataset health & bounding box audit
+│   ├── benchmark.bat       # Multi-architecture benchmark runner (DiagonNet vs CNN vs MLP)
+│   ├── build.bat           # One-click static binary builder & test runner
+│   ├── config.bat          # Interactive control panel & configuration dashboard
+│   ├── train.bat           # Data-parallel deep learning model training pipeline
+│   └── use.bat             # Real-time web canvas server & browser auto-launcher
+└── weights/                # Binary model weights storage (DIAGON01 format)
 ```
 
 ---
