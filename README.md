@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
-[![Tests](https://img.shields.io/badge/Tests-57%20Passing-success)](main_test.go)
+[![Tests](https://img.shields.io/badge/Tests-54%20Passing-success)](main_test.go)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](README.md)
 
 > **Pure Go Zero-Dependency Deep Learning Engine, 13-Channel Spatial Difference Manifold Calculus & High-Performance CPU Runtime.**
@@ -29,9 +29,8 @@ GitHub Repository: [https://github.com/itznan/diagonalnet](https://github.com/it
   - [10. Neural Network Layers & Analytical Jacobian Autograd](#10-neural-network-layers--analytical-jacobian-autograd)
   - [11. Data-Parallel BatchTrainer & Model Architecture](#11-data-parallel-batchtrainer--model-architecture)
   - [12. Best-Model Checkpointing & Multi-Class Evaluation Metrics](#12-best-model-checkpointing--multi-class-evaluation-metrics)
-  - [13. Architecture Benchmark Runner (DiagonNet vs CNN vs MLP)](#13-architecture-benchmark-runner-diagonnet-vs-cnn-vs-mlp)
-  - [14. Real-Time Web Server, Embedded Canvas UI & REST API](#14-real-time-web-server-embedded-canvas-ui--rest-api)
-  - [15. Dual-Mode CLI Routing Subsystem](#15-dual-mode-cli-routing-subsystem)
+  - [13. Real-Time Web Server, Embedded Canvas UI & REST API](#13-real-time-web-server-embedded-canvas-ui--rest-api)
+  - [14. Dual-Mode CLI Routing Subsystem](#14-dual-mode-cli-routing-subsystem)
 - [Unit Testing & Numerical Gradient Verification](#unit-testing--numerical-gradient-verification)
 - [Project Directory Structure](#project-directory-structure)
 - [Getting Started & CLI Usage](#getting-started--cli-usage)
@@ -67,15 +66,14 @@ DiagonNet does not rely on PyTorch, TensorFlow, OpenCV, NumPy, scikit-learn, or 
 | 4 | **Corrupt, Blank, and Tiny Drawing Artifacts**<br>Dataset anomalies (corrupt files, 100% blank scans, tiny 5-pixel outlier marks) silently pollute training gradients and degrade classification performance. | **Automated Dataset Health & Quality Auditor (`-audit`)**<br>Computes foreground stroke statistics, detects corrupt/blank/tiny outliers, evaluates average bounding boxes, aspect ratios, and stroke densities, and prints formatted diagnostic tables. |
 | 5 | **Resolution & Canvas Scale Domain Gap**<br>Sketches drawn on wide web canvases ($400\text{px}$) vs small dataset icons ($20\text{px}$) cause distribution shifts and classification failures. | **Scale-Invariant Proportional Padding & Centering**<br>Locates the tight foreground bounding box ($>10$ luminosity), calculates dynamic margin $\text{pad} = \max(2, \lfloor 0.22 \times D \rfloor)$, and centers into an $S \times S$ square canvas, ensuring foreground always occupies $\approx 70\%$ of canvas area. |
 | 6 | **Faint & Inconsistent Stroke Luminosity**<br>Variable stylus pressure or light sketching creates faint, low-contrast drawings that under-activate neural activations. | **Peak Stroke Luminosity Contrast Stretching**<br>Measures peak foreground luminosity $L_{\max}$; if $30 < L_{\max} < 240$, adaptively rescales intensities via $y' = \min(255, \text{round}(y \cdot 255.0 / L_{\max}))$. |
-| 7 | **Sub-Pixel Grid Aliasing & Distortion**<br>Discrete nearest-neighbor resizing produces jagged stroke edges and loss of diagonal manifold features. | **Sub-Pixel Bilinear Interpolation Resampling**<br>Resamples images to a single canonical grid ($28 \times 28$, the `InputSize` constant shared by training, benchmarking and live inference) using continuous half-pixel shifted coordinates $(x+0.5)\frac{W_s}{W_t} - 0.5$ and 4-neighbor bilinear weighting. |
+| 7 | **Sub-Pixel Grid Aliasing & Distortion**<br>Discrete nearest-neighbor resizing produces jagged stroke edges and loss of diagonal manifold features. | **Sub-Pixel Bilinear Interpolation Resampling**<br>Resamples images to a single canonical grid ($28 \times 28$, the `InputSize` constant shared by training and live inference) using continuous half-pixel shifted coordinates $(x+0.5)\frac{W_s}{W_t} - 0.5$ and 4-neighbor bilinear weighting. |
 | 8 | **Training Overfitting & Stroke Invariance Gaps**<br>Limited hand-drawn datasets lack variety in stroke thickness, hand slant, and orientation. Translation-based augmentation is a trap here: bounding-box re-centering undoes a shift exactly, so shifted variants re-enter the set as byte-identical duplicates of the original. | **15-Variant Comprehensive Data Augmentor**<br>Generates 15 continuous geometric and morphological variants per sample: rotations ($\pm 10^\circ, \pm 15^\circ$), center-anchored scale and aspect jitter ($1.15 \dots 1.30$), combined tilt + slant, horizontal slant shear ($\pm 0.20$), dilation thickening, and erosion thinning. Every variant survives re-centering as a genuinely distinct pose. |
-| 21 | **Silent Train/Serve Resolution Drift**<br>The resize target was repeated as a literal in four independent code paths. If any one drifted, the receptive fields seen at serve time no longer matched those the weights were fitted on &mdash; live accuracy collapses while validation accuracy still reads clean, with nothing in the output to explain it. | **Single `InputSize` Resolution Constant**<br>`runTrain`, `PreprocessWebImage`, the benchmark loader and the synthetic benchmark generator all resample through one constant. The synthetic generator expresses its shape geometry as a fraction of the canvas rather than in absolute pixels, so it follows `InputSize` instead of being pinned to a fixed grid. |
+| 21 | **Silent Train/Serve Resolution Drift**<br>The resize target was repeated as a literal in four independent code paths. If any one drifted, the receptive fields seen at serve time no longer matched those the weights were fitted on &mdash; live accuracy collapses while validation accuracy still reads clean, with nothing in the output to explain it. | **Single `InputSize` Resolution Constant**<br>`runTrain` and `PreprocessWebImage` resample through one constant so training and serving receptive fields never drift. |
 | 22 | **Stale Checkpoints Serving as Working Models**<br>`runServer` swallowed the error from `LoadModelWeights` and silently fell through to He-initialized weights, so a checkpoint written by an older build presented as a model that loads fine and predicts nonsense. | **Explicit Checkpoint & Untrained-Weight Warnings**<br>Prints the load failure, names the retrain command, and warns again whenever the server starts on untrained weights. |
 | 9 | **Multi-Core CPU Bottleneck in Single-Threaded Backprop**<br>Sequential sample-by-sample forward and backward passes leave 90%+ of modern multi-core CPU capacity idle. | **Data-Parallel BatchTrainer & Worker Replicas**<br>Spawns $N = \text{runtime.NumCPU()}$ model replicas, partitions batches of size $B$ into $\lceil B/N \rceil$ slices, computes concurrent backward passes, and reduces gradients in parallel. |
 | 10 | **Late-Epoch Overfitting & Weight Degradation**<br>Extended training often overfits late in the schedule, degrading generalization performance past the optimal validation epoch. | **Best-Model Validation Accuracy Checkpointing**<br>Tracks validation accuracy across epochs, snapshots weights when a new best accuracy is achieved, and restores optimal parameters prior to model serialization. |
 | 11 | **Single-Metric Accuracy Evaluation Blindness**<br>Standard accuracy metrics hide class-specific failure modes, precision-recall trade-offs, and class imbalance artifacts. | **Comprehensive Multi-Class Confusion & F1 Profiler**<br>Calculates per-class $TP, FP, FN, \text{Precision}, \text{Recall}, \text{F1-Score}$, macro-averages, and formatted ASCII confusion tables. |
 | 12 | **Spatial & Directional Representation Bottleneck**<br>Standard 1-channel or 3-channel convolutional architectures struggle to capture non-local diagonal textures and discrete spatial derivatives without deep networks. | **13-Channel Spatial Difference Manifold Calculus**<br>Precomputes an analytical 13-channel manifold comprising base grayscale intensity ($Ch_0$), 4 immediate diagonal differential operators ($Ch_{1-4}$), and all 8 chess knight-move differential operators ($Ch_{5-12}$) in parallel across CPU rows. |
-| 13 | **Architectural Ablation & Baseline Evaluation Vacuum**<br>Measuring deep learning innovation requires rigorous head-to-head empirical comparison against standardized baseline architectures on identical data partitions. | **Automated Multi-Model Architecture Benchmark Runner (`--benchmark`)**<br>Benchmarks DiagonNet against baseline 1-channel CNN (`SimpleCNN`) and dense MLP (`SimpleMLP`), training each for identical epochs, outputting comparative ASCII summary tables and exporting to `assets/comparison_results.csv`. |
 | 14 | **Clunky Web Serving & Third-Party UI Framework Overhead**<br>Serving deep learning models typically requires bloated Node.js/React frontends, separate Python Flask/FastAPI backends, and CORS proxy headaches. | **Self-Contained Embedded HTML5 Canvas Web App & REST API (`-serve`)**<br>Embeds an entire single-page dark-themed drawing canvas web app directly into Go binary with real-time `<8ms` prediction REST API (`/api/predict`), metadata introspection (`/api/info`), and automatic multi-OS browser launching. |
 | 15 | **Softmax Floating-Point Overflow & NaN Hazards**<br>Computing $\exp(z_i)$ directly causes IEEE-754 single-precision overflow ($+\infty$) and `NaN` values whenever logits exceed $\approx 88.7$. | **Max-Logit Subtracted Stable Exponentiation**<br>Subtracts the maximum logit $m = \max_j z_j$ prior to exponentiation ($e_i = \exp(z_i - m)$), guaranteeing mathematical invariance, bounded exponents ($\le 0$), and zero overflow risks. |
 | 16 | **Cross-Entropy Zero-Probability Singularity**<br>When model predicts $p_{\text{target}} = 0$, $-\ln(0)$ yields $-\infty$ (or NaN) during training loss computation. | **Epsilon-Bounded Categorical Cross-Entropy**<br>Applies strict boundary stabilization $-\ln(p_{\text{target}} + 10^{-15})$ coupled with direct analytical pre-softmax logit gradients $\frac{\partial \mathcal{L}}{\partial z_i} = p_i - \mathbf{1}(i = \text{target})$. |
@@ -118,8 +116,7 @@ flowchart TD
     W --> X[ModelCheckpoint Best Validation Restorer]
     X --> Y[Comprehensive Multi-Class Metric Profiler]
     Y --> Z[DIAGON01 Binary Model Persistence]
-    Z --> AA[Architecture Benchmark Runner vs SimpleCNN & SimpleMLP]
-    AA --> AB[Embedded HTML5 Canvas Web Server & REST API]
+    Z --> AB[Embedded HTML5 Canvas Web Server & REST API]
 ```
 
 ### 1. Hardware Topology & Multi-Core Concurrency
@@ -174,7 +171,7 @@ flowchart TD
 - **Scale-Invariant Proportional Padding**: Expands canvas $S = D + 2 \times \max(2, \lfloor 0.22 \times D \rfloor)$ and centers features to ensure $\approx 70\%$ occupancy (`PadAndCenter`, `PadAndCenterTensor`).
 - **Peak Stroke Luminosity Contrast Stretching**: Normalizes faint strokes when $30 < L_{\max} < 240$ via $y' = \min(255, \text{round}(y \cdot 255.0 / L_{\max}))$ (`ContrastStretch`, `ContrastStretchTensor`).
 - **Sub-Pixel Bilinear Resampling**: Continuous half-pixel shifted bilinear interpolation to the canonical $28 \times 28$ spatial resolution (`ResizeBilinear`, `ResizeBilinearTensor`).
-- **Single Resolution Constant (`InputSize`)**: Training, live web inference, the benchmark loader and the synthetic benchmark generator all resample through one constant, so the training and serving grids cannot drift apart.
+- **Single Resolution Constant (`InputSize`)**: Training and live web inference both resample through one constant, so the training and serving grids cannot drift apart.
 - **Geometric Transformations**: Center-pivot continuous coordinate rotation (`RotateImage`), center-anchored scale and aspect jitter (`ScaleImage`), 2D translation (`ShiftImage`), and affine slant shearing (`ShearImage`).
   - `ScaleImage` accepts factors $\geq 1.0$ only. Its backward map reads a sub-region of the source; a factor below $1.0$ would sample out of bounds and clip the drawing.
 - **Morphological Filtering**: $3 \times 3$ maximum filter dilation (`MorphDilation`) and $3 \times 3$ minimum filter erosion with replicate-edge clamping (`MorphErosion`). Clamping matters: treating out-of-bounds neighbours as black forces every border pixel to $0$ regardless of its value, carving a 1px black frame out of each eroded variant.
@@ -245,23 +242,16 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
   $$\text{Precision}_c = \frac{\text{TP}_c}{\text{TP}_c + \text{FP}_c}, \quad \text{Recall}_c = \frac{\text{TP}_c}{\text{TP}_c + \text{FN}_c}$$
   $$\text{F1}_c = \frac{2 \cdot \text{Precision}_c \cdot \text{Recall}_c}{\text{Precision}_c + \text{Recall}_c}, \quad \text{Macro-F1} = \frac{1}{K} \sum_{c=0}^{K-1} \text{F1}_c$$
 
-### 13. Architecture Benchmark Runner (DiagonNet vs CNN vs MLP)
-- **Baseline Models**: Standard 1-channel CNN (`SimpleCNNModel`) and dense Multi-Layer Perceptron (`SimpleMLPModel`).
-- **Depth-Matched CNN Baseline**: `SimpleCNNModel` mirrors `DiagonNetModel` layer for layer &mdash; same channel counts, pool targets and hidden width &mdash; and differs **only** in its input: raw 1-channel grayscale versus the 13-channel manifold. Parameter counts land within $\approx 2\%$ of each other, so the reported delta measures the contribution of the feature transform rather than a depth gap between the two architectures.
-- **Controlled Evaluation**: Trains all 3 architectures on identical dataset splits using Adam optimizer and milestone learning rates for $E=15$ epochs.
-- **Comparison & Export**: Renders formatted ASCII comparison tables with parameter counts, training times, validation accuracies, macro-F1 scores, and deltas, and exports results to `assets/comparison_results.csv` (`RunArchitectureBenchmark`, `ExportBenchmarkCSV`).
-
-### 14. Real-Time Web Server, Embedded Canvas UI & REST API
+### 13. Real-Time Web Server, Embedded Canvas UI & REST API
 - **Embedded HTML5 Drawing Canvas App**: Single-page dark-themed cyberpunk web app ($400\times 400\text{px}$) embedded directly in Go binary string `webAppHTML`, with touch/stylus support, keyboard shortcuts (`C`/`Esc`), top prediction banner, and animated progress bars.
 - **Real-Time Prediction API (`/api/predict`)**: Decodes base64 drawings, applies scale-invariant preprocessing, executes sub-8ms forward pass on CPU, and returns class confidences and execution latencies.
 - **Auto Browser Launcher (`OpenBrowser`)**: Automatically opens default browser across Windows (`rundll32`), macOS (`open`), and Linux (`xdg-open`).
 
-### 15. Dual-Mode CLI Routing Subsystem
+### 14. Dual-Mode CLI Routing Subsystem
 - **Flexible Argument Parsing**: Supports both Unix-style command flags and standard positional subcommands:
   - `train` / `-train`: Launch deep learning training pipeline.
   - `serve` / `-serve`: Start the interactive HTTP inference and dashboard runtime.
   - `audit` / `-audit`: Run dataset verification and manifold integrity checks.
-  - `benchmark` / `-benchmark`: Run performance and throughput benchmarks.
   - `help` / `-help`: Print usage instructions.
 
 ---
@@ -326,13 +316,11 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 | `TestBatchTrainerDataParallelTraining` | $N$-replica data-parallel batch training, master gradient reduction, and Adam step | `PASS` |
 | `TestModelCheckpointBestAccuracyAndRestoration` | Validation accuracy tracking, epoch weight snapshotting, and optimal weight restoration | `PASS` |
 | `TestMultiClassEvaluationMetrics` | Confusion matrix, Precision, Recall, F1-Score, and Macro-F1 formulas | `PASS` |
-| `TestSimpleCNNModelForwardBackward` | Depth-matched baseline 1-channel CNN forward pass and analytical Jacobian backpropagation across all 8 parameter buffers | `PASS` |
-| `TestSimpleMLPModelForwardBackward` | Baseline dense MLP forward pass and analytical Jacobian backpropagation | `PASS` |
-| `TestRunArchitectureBenchmarkAndCSVExport` | Comparative 3-model benchmark execution and CSV export validation | `PASS` |
 | `TestEmbeddedWebAppHTML` | Embedded HTML5 canvas web app structure, controls, and API integration checks | `PASS` |
 | `TestPreprocessWebImagePipeline` | Web drawing bounding box extraction, proportional padding, and `InputSize` resampling | `PASS` |
 | `TestInferenceServerHTTPRoutesAndPredict` | HTTP server GET /, GET /api/info, and POST /api/predict real-time latency verification | `PASS` |
 | `TestMaxPool2DLayerForwardAndBackward` | 2D Max pooling forward spatial downsampling and exact sparse ArgMax backpropagation | `PASS` |
+| `TestInferenceServerDeepStats` | Real-time memory metrics, parameter counts, and model topology introspection endpoint | `PASS` |
 
 ---
 
@@ -350,13 +338,12 @@ C:\diagonalnet\
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
-├── assets/                 # Visual assets, manifolds, comparison CSVs
+├── assets/                 # Visual assets, dataset manifolds
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
 ├── data/                   # Dataset storage directory
 ├── scripts/                # Self-elevating Administrator utility batch scripts
 │   ├── allinone.bat        # Master control suite & end-to-end pipeline runner
 │   ├── audit.bat           # Automated dataset health & bounding box audit
-│   ├── benchmark.bat       # Multi-architecture benchmark runner (DiagonNet vs CNN vs MLP)
 │   ├── build.bat           # One-click static binary builder & test runner
 │   ├── config.bat          # Interactive control panel & configuration dashboard
 │   ├── pull.bat            # Git pull automation script
@@ -436,10 +423,6 @@ diagonnet audit -data data
 # Start interactive HTTP dashboard and inference server
 diagonnet serve -model weights/diagonnet_model.bin -port 8081
 # or: diagonnet -serve -port 8081
-
-# Run manifold and standard benchmark suite
-diagonnet benchmark -data data
-# or: diagonnet -benchmark
 ```
 
 ### Verify Zero Dependencies

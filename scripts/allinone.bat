@@ -30,26 +30,24 @@ echo   [2] Compile Static Binary     (go build -o bin\diagonnet.exe .)
 echo   [3] Dataset Health Audit      (go run . -audit -data data)
 echo   [4] Train DiagonNet Model     (go run . -train -epochs 10 -lr 0.002)
 echo   [5] Launch Real-Time Web UI   (go run . -serve -port 8081 -^> Browser)
-echo   [6] Architecture Benchmark    (go run . -benchmark -epochs 15)
-echo   [7] Run Full Test Suite       (go test -v ./... [56 Tests Passing])
-echo   [8] Zero-Dependency Audit     (Verify Pure Go Standard Library)
-echo   [9] System Hardware Diagnostics
+echo   [6] Run Full Test Suite       (go test -v ./... [54 Tests Passing])
+echo   [7] Zero-Dependency Audit     (Verify Pure Go Standard Library)
+echo   [8] System Hardware Diagnostics
 echo   [0] Exit Master Suite
 echo.
 echo ================================================================================
-set /p CHOICE="Select an action [0-9]: "
+set /p CHOICE="Select an action [0-8]: "
 
 if "%CHOICE%"=="1" goto DO_ALL_PIPELINE
 if "%CHOICE%"=="2" goto DO_BUILD
 if "%CHOICE%"=="3" goto DO_AUDIT
 if "%CHOICE%"=="4" goto DO_TRAIN
 if "%CHOICE%"=="5" goto DO_SERVE
-if "%CHOICE%"=="6" goto DO_BENCHMARK
-if "%CHOICE%"=="7" goto DO_TEST
-if "%CHOICE%"=="8" goto DO_DEPS
-if "%CHOICE%"=="9" goto DO_DIAGNOSTICS
+if "%CHOICE%"=="6" goto DO_TEST
+if "%CHOICE%"=="7" goto DO_DEPS
+if "%CHOICE%"=="8" goto DO_DIAGNOSTICS
 if "%CHOICE%"=="0" goto DO_EXIT
-echo [Error] Invalid option selected. Please choose 0-9.
+echo [Error] Invalid option selected. Please choose 0-8.
 timeout /t 2 >nul
 goto MENU
 
@@ -83,7 +81,7 @@ if %errorlevel% neq 0 (
 )
 echo.
 
-echo [Step 4/5] Running complete 56-test mathematical autograd verification suite...
+echo [Step 4/5] Running complete 54-test mathematical autograd verification suite...
 go test -v ./...
 echo.
 
@@ -177,18 +175,9 @@ echo.
 pause
 goto MENU
 
-:DO_BENCHMARK
-cls
-set /p BEP="Enter benchmark epochs (default 15): "
-if "!BEP!"=="" set BEP=15
-go run . -benchmark -epochs !BEP!
-echo.
-pause
-goto MENU
-
 :DO_TEST
 cls
-echo [Info] Running 56-test mathematical autograd and Jacobian verification suite...
+echo [Info] Running 54-test mathematical autograd and Jacobian verification suite...
 go test -v ./...
 echo.
 pause

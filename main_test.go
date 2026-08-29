@@ -2196,142 +2196,6 @@ func TestMultiClassEvaluationMetrics(t *testing.T) {
 	PrintEvaluationReport(report)
 }
 
-// 30. Baseline SimpleCNN Forward & Analytical Backpropagation Unit Tests (Prompt 45)
-func TestSimpleCNNModelForwardBackward(t *testing.T) {
-	rng := rand.New(rand.NewSource(101))
-	model := NewSimpleCNNModel(3, rng)
-
-	input := NewTensor(1, 100, 100)
-	for y := 30; y < 70; y++ {
-		for x := 30; x < 70; x++ {
-			input.Set(0, y, x, 0.8)
-		}
-	}
-
-	// 1. Forward Pass
-	logits := model.Forward(input)
-	if len(logits) != 3 {
-		t.Fatalf("expected 3 logits, got %d", len(logits))
-	}
-
-	// 2. Analytical Forward & Backward Pass
-	target := 1
-	loss, probs := model.ForwardBackward(input, target)
-	if loss <= 0 {
-		t.Fatalf("expected positive loss, got %f", loss)
-	}
-	if len(probs) != 3 {
-		t.Fatalf("expected 3 probabilities, got %d", len(probs))
-	}
-
-	// Check non-zero gradients in parameter buffers
-	params := model.Parameters()
-	if len(params) != 8 {
-		t.Fatalf("expected 8 parameter buffers (Conv1W/B, Conv2W/B, FC1W/B, FCW/B), got %d", len(params))
-	}
-	for i, p := range params {
-		var maxGrad float32
-		for _, g := range p.Grad {
-			if float32(math.Abs(float64(g))) > maxGrad {
-				maxGrad = float32(math.Abs(float64(g)))
-			}
-		}
-		if maxGrad <= 1e-9 {
-			t.Fatalf("param buffer %d received zero gradients", i)
-		}
-	}
-}
-
-// 31. Baseline SimpleMLP Forward & Analytical Backpropagation Unit Tests (Prompt 45)
-func TestSimpleMLPModelForwardBackward(t *testing.T) {
-	rng := rand.New(rand.NewSource(202))
-	model := NewSimpleMLPModel(4, rng)
-
-	input := NewTensor(1, 100, 100)
-	for y := 20; y < 80; y++ {
-		input.Set(0, y, 50, 1.0)
-	}
-
-	// 1. Forward Pass
-	logits := model.Forward(input)
-	if len(logits) != 4 {
-		t.Fatalf("expected 4 logits, got %d", len(logits))
-	}
-
-	// 2. Analytical Forward & Backward Pass
-	target := 2
-	loss, probs := model.ForwardBackward(input, target)
-	if loss <= 0 {
-		t.Fatalf("expected positive loss, got %f", loss)
-	}
-	if len(probs) != 4 {
-		t.Fatalf("expected 4 probabilities, got %d", len(probs))
-	}
-
-	// Check non-zero gradients in parameter buffers
-	params := model.Parameters()
-	if len(params) != 4 {
-		t.Fatalf("expected 4 parameter buffers (FC1W, FC1B, FC2W, FC2B), got %d", len(params))
-	}
-	for i, p := range params {
-		var maxGrad float32
-		for _, g := range p.Grad {
-			if float32(math.Abs(float64(g))) > maxGrad {
-				maxGrad = float32(math.Abs(float64(g)))
-			}
-		}
-		if maxGrad <= 1e-9 {
-			t.Fatalf("param buffer %d received zero gradients", i)
-		}
-	}
-}
-
-// 32. Architecture Benchmark Runner & CSV Export Verification (Prompt 45)
-func TestRunArchitectureBenchmarkAndCSVExport(t *testing.T) {
-	tempDir := t.TempDir()
-	csvPath := filepath.Join(tempDir, "benchmark_test_results.csv")
-
-	results, err := RunArchitectureBenchmark("", 3, 16, 0.005, csvPath)
-	if err != nil {
-		t.Fatalf("benchmark failed: %v", err)
-	}
-
-	if len(results) != 3 {
-		t.Fatalf("expected 3 architecture benchmark results, got %d", len(results))
-	}
-
-	// Verify model names and metrics
-	expectedArchs := []string{"DiagonNet (13-Ch)", "SimpleCNN (1-Ch)", "SimpleMLP (Dense)"}
-	for i, expected := range expectedArchs {
-		if results[i].Architecture != expected {
-			t.Fatalf("arch mismatch at %d: expected %s, got %s", i, expected, results[i].Architecture)
-		}
-		if results[i].ParamCount <= 0 {
-			t.Fatalf("invalid parameter count for %s: %d", expected, results[i].ParamCount)
-		}
-		if results[i].TrainTimeMs < 0 {
-			t.Fatalf("invalid training time for %s: %d", expected, results[i].TrainTimeMs)
-		}
-		if results[i].ValAccuracy < 0 || results[i].ValAccuracy > 1.0 {
-			t.Fatalf("invalid validation accuracy for %s: %f", expected, results[i].ValAccuracy)
-		}
-	}
-
-	// Verify CSV file exists and contains valid content
-	content, err := os.ReadFile(csvPath)
-	if err != nil {
-		t.Fatalf("failed to read exported CSV file: %v", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	if len(lines) != 4 { // 1 header + 3 rows
-		t.Fatalf("expected 4 lines in benchmark CSV, got %d:\n%s", len(lines), string(content))
-	}
-	if !strings.HasPrefix(lines[0], "Architecture,Parameters") {
-		t.Fatalf("unexpected CSV header: %s", lines[0])
-	}
-}
-
 // 33. Embedded HTML5 Web Application Content Verification (Prompt 46)
 func TestEmbeddedWebAppHTML(t *testing.T) {
 	if len(webAppHTML) < 500 {
@@ -2518,6 +2382,107 @@ func TestMaxPool2DLayerForwardAndBackward(t *testing.T) {
 		}
 	}
 }
+
+// 36. HTTP Inference Server Deep Stats Integration Test
+func TestInferenceServerDeepStats(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	classes := []string{"0", "1", "2", "3", "4"}
+	model := NewDiagonNetModel(len(classes), rng)
+	server := NewInferenceServer(model, classes, 8081)
+
+	// Draw a circle in the center of 400x400 canvas
+	drawImg := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	for y := 0; y < 400; y++ {
+		for x := 0; x < 400; x++ {
+			dx := float64(x - 200)
+			dy := float64(y - 200)
+			dist := math.Sqrt(dx*dx + dy*dy)
+			if dist >= 60 && dist <= 80 {
+				drawImg.Set(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+			}
+		}
+	}
+
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, drawImg); err != nil {
+		t.Fatalf("failed to encode synthetic PNG: %v", err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+
+	payload, _ := json.Marshal(PredictRequest{Image: dataURL})
+	reqPredict := httptest.NewRequest(http.MethodPost, "/api/predict", bytes.NewReader(payload))
+	recPredict := httptest.NewRecorder()
+	server.ServeHTTP(recPredict, reqPredict)
+
+	if recPredict.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for /api/predict, got %d: %s", recPredict.Code, recPredict.Body.String())
+	}
+
+	var predResp PredictResponse
+	if err := json.NewDecoder(recPredict.Body).Decode(&predResp); err != nil {
+		t.Fatalf("failed to decode /api/predict JSON: %v", err)
+	}
+
+	if predResp.Stats == nil {
+		t.Fatalf("expected non-nil Stats in PredictResponse")
+	}
+
+	stats := predResp.Stats
+
+	// 1. Information Theory
+	if stats.EntropyBits < 0 || stats.EntropyBits > stats.MaxEntropyBits+1e-3 {
+		t.Errorf("entropy out of range: %f (max: %f)", stats.EntropyBits, stats.MaxEntropyBits)
+	}
+	if stats.Perplexity < 1.0 || stats.Perplexity > float64(len(classes))+1e-3 {
+		t.Errorf("perplexity out of range: %f", stats.Perplexity)
+	}
+	if len(stats.RawLogits) != len(classes) {
+		t.Errorf("expected %d raw logits, got %d", len(classes), len(stats.RawLogits))
+	}
+
+	// 2. Geometry
+	if stats.Geometry.BBoxWidth <= 0 || stats.Geometry.BBoxHeight <= 0 {
+		t.Errorf("invalid bbox dimensions: %dx%d", stats.Geometry.BBoxWidth, stats.Geometry.BBoxHeight)
+	}
+	if stats.Geometry.ForegroundPixels <= 0 {
+		t.Errorf("expected positive foreground pixels, got %d", stats.Geometry.ForegroundPixels)
+	}
+	if len(stats.Geometry.Resampled28x28) != InputSize*InputSize {
+		t.Errorf("expected %d resampled pixels, got %d", InputSize*InputSize, len(stats.Geometry.Resampled28x28))
+	}
+
+	// 3. 13-Channel Manifold
+	if len(stats.Manifold.ChannelNames) != 13 {
+		t.Errorf("expected 13 channel names, got %d", len(stats.Manifold.ChannelNames))
+	}
+	if len(stats.Manifold.ChannelGrids) != 13 {
+		t.Errorf("expected 13 channel grids, got %d", len(stats.Manifold.ChannelGrids))
+	}
+	for i, grid := range stats.Manifold.ChannelGrids {
+		if len(grid) != InputSize*InputSize {
+			t.Errorf("channel %d grid length %d != %d", i, len(grid), InputSize*InputSize)
+		}
+	}
+
+	// 4. Layer Activations
+	if len(stats.Layers.FC1HiddenVector) != 128 {
+		t.Errorf("expected 128 FC1 hidden values, got %d", len(stats.Layers.FC1HiddenVector))
+	}
+
+	// 5. Performance Timing
+	if stats.Timing.TotalUs <= 0 {
+		t.Errorf("expected positive total latency, got %f", stats.Timing.TotalUs)
+	}
+	if stats.Timing.ThroughputFps <= 0 {
+		t.Errorf("expected positive throughput FPS, got %f", stats.Timing.ThroughputFps)
+	}
+
+	// 6. Runtime Health
+	if stats.Runtime.CPUCores <= 0 {
+		t.Errorf("expected positive CPU cores, got %d", stats.Runtime.CPUCores)
+	}
+}
+
 
 
 

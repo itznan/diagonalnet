@@ -24,26 +24,24 @@ echo.
 echo   [1] Run Dataset Quality, Stroke & Health Audit          (-audit)
 echo   [2] Train DiagonNet Deep Neural Network Pipeline        (-train)
 echo   [3] Launch Interactive Web Drawing Canvas & API Server   (-serve)
-echo   [4] Run Architecture Benchmark (DiagonNet vs CNN vs MLP) (-benchmark)
-echo   [5] Execute Full 56-Test Mathematical Verification Suite (go test -v)
-echo   [6] Compile Static Binary to bin\diagonnet.exe          (go build)
-echo   [7] Perform Zero-Dependency & stdlib Import Audit       (deps verify)
-echo   [8] Show Hardware Topology & Multi-Core Diagnostics
-echo   [9] Exit Control Panel
+echo   [4] Execute Full 54-Test Mathematical Verification Suite (go test -v)
+echo   [5] Compile Static Binary to bin\diagonnet.exe          (go build)
+echo   [6] Perform Zero-Dependency & stdlib Import Audit       (deps verify)
+echo   [7] Show Hardware Topology & Multi-Core Diagnostics
+echo   [8] Exit Control Panel
 echo.
 echo ================================================================================
-set /p CHOICE="Enter your selection [1-9]: "
+set /p CHOICE="Enter your selection [1-8]: "
 
 if "%CHOICE%"=="1" goto DO_AUDIT
 if "%CHOICE%"=="2" goto DO_TRAIN
 if "%CHOICE%"=="3" goto DO_SERVE
-if "%CHOICE%"=="4" goto DO_BENCHMARK
-if "%CHOICE%"=="5" goto DO_TEST
-if "%CHOICE%"=="6" goto DO_BUILD
-if "%CHOICE%"=="7" goto DO_DEPS
-if "%CHOICE%"=="8" goto DO_DIAGNOSTICS
-if "%CHOICE%"=="9" goto DO_EXIT
-echo [Error] Invalid option selected. Please enter 1-9.
+if "%CHOICE%"=="4" goto DO_TEST
+if "%CHOICE%"=="5" goto DO_BUILD
+if "%CHOICE%"=="6" goto DO_DEPS
+if "%CHOICE%"=="7" goto DO_DIAGNOSTICS
+if "%CHOICE%"=="8" goto DO_EXIT
+echo [Error] Invalid option selected. Please enter 1-8.
 timeout /t 2 >nul
 goto MENU
 
@@ -83,18 +81,9 @@ echo.
 pause
 goto MENU
 
-:DO_BENCHMARK
-cls
-set /p BEP="Enter benchmark epochs (default 15): "
-if "!BEP!"=="" set BEP=15
-go run . -benchmark -epochs !BEP!
-echo.
-pause
-goto MENU
-
 :DO_TEST
 cls
-echo [Info] Executing 56-test mathematical autograd & manifold suite...
+echo [Info] Executing 54-test mathematical autograd & manifold suite...
 go test -v ./...
 echo.
 pause

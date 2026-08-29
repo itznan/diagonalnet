@@ -49,7 +49,7 @@ const banner = `
 // InputSize is the square spatial resolution (InputSize x InputSize) that every image is
 // resampled to after bounding-box cropping, centering and contrast stretching.
 //
-// Training, benchmarking and live web inference all read this single constant. If the training
+// Training and live web inference all read this single constant. If the training
 // pipeline and the inference pipeline disagree on this value the convolutional receptive fields
 // seen at serve time no longer match the ones the weights were fitted on, which silently
 // destroys accuracy. Keep it as the one knob.
@@ -3912,270 +3912,6 @@ func PrintEvaluationReport(report EvaluationReport) {
 	fmt.Println("=======================================================================================")
 }
 
-// ============================================================================
-// 8. BASELINE ARCHITECTURES & COMPARATIVE BENCHMARK RUNNER (Prompt 45)
-// ============================================================================
-
-// TrainableModel defines the common interface for benchmark neural architectures.
-type TrainableModel interface {
-	Forward(input *Tensor) []float32
-	ForwardBackward(input *Tensor, targetClass int) (float32, []float32)
-	Parameters() []*Parameter
-	SetTraining(training bool)
-	SnapshotWeights() [][]float32
-	RestoreWeights(snapshot [][]float32)
-}
-
-// SimpleCNNModel implements a 1-channel convolutional baseline without manifold calculus.
-//
-// It deliberately mirrors DiagonNetModel layer for layer, differing only in the input: raw
-// grayscale [1 x S x S] instead of the 13-channel spatial difference manifold. Keeping the depth
-// identical is what makes the benchmark meaningful — otherwise the reported delta measures the
-// architecture gap between a deep net and a shallow one, not the contribution of the manifold.
-type SimpleCNNModel struct {
-	NumClasses int
-
-	Conv1 *Conv2DLayer
-	ReLU1 *ReLULayer
-	Pool1 *MaxPool2DLayer
-
-	Conv2 *Conv2DLayer
-	ReLU2 *ReLULayer
-	Pool2 *MaxPool2DLayer
-
-	Pool *AdaptiveAvgPool2DLayer
-
-	FC1     *LinearLayer
-	ReLU3   *ReLULayer
-	Dropout *DropoutLayer
-	FC      *LinearLayer
-
-	LossFn *CategoricalCrossEntropyLoss
-}
-
-// NewSimpleCNNModel constructs a 1-channel baseline convolutional model.
-func NewSimpleCNNModel(numClasses int, rng *rand.Rand) *SimpleCNNModel {
-	if rng == nil {
-		rng = rand.New(rand.NewSource(42))
-	}
-	flatDim := diagonConv2Channels * diagonPoolTarget * diagonPoolTarget
-
-	return &SimpleCNNModel{
-		NumClasses: numClasses,
-
-		Conv1: NewConv2DLayer(1, diagonConv1Channels, 3, 1, 1, rng),
-		ReLU1: NewReLULayer(),
-		Pool1: NewMaxPool2DLayer(2),
-
-		Conv2: NewConv2DLayer(diagonConv1Channels, diagonConv2Channels, 3, 1, 1, rng),
-		ReLU2: NewReLULayer(),
-		Pool2: NewMaxPool2DLayer(2),
-
-		Pool: NewAdaptiveAvgPool2DLayer(diagonPoolTarget, diagonPoolTarget),
-
-		FC1:     NewLinearLayer(flatDim, diagonHiddenUnits, rng),
-		ReLU3:   NewReLULayer(),
-		Dropout: NewDropoutLayer(0.2, rng),
-		FC:      NewLinearLayer(diagonHiddenUnits, numClasses, rng),
-
-		LossFn: NewCategoricalCrossEntropyLoss(),
-	}
-}
-
-func (m *SimpleCNNModel) Parameters() []*Parameter {
-	return []*Parameter{
-		m.Conv1.Weights, m.Conv1.Bias,
-		m.Conv2.Weights, m.Conv2.Bias,
-		m.FC1.Weights, m.FC1.Biases,
-		m.FC.Weights, m.FC.Biases,
-	}
-}
-
-func (m *SimpleCNNModel) SetTraining(training bool) {
-	m.Dropout.Training = training
-}
-
-func (m *SimpleCNNModel) SnapshotWeights() [][]float32 {
-	params := m.Parameters()
-	snapshot := make([][]float32, len(params))
-	for i, p := range params {
-		if p != nil {
-			snapshot[i] = make([]float32, len(p.Data))
-			copy(snapshot[i], p.Data)
-		}
-	}
-	return snapshot
-}
-
-func (m *SimpleCNNModel) RestoreWeights(snapshot [][]float32) {
-	params := m.Parameters()
-	for i, p := range params {
-		if p != nil && i < len(snapshot) && snapshot[i] != nil {
-			copy(p.Data, snapshot[i])
-		}
-	}
-}
-
-func (m *SimpleCNNModel) Forward(input *Tensor) []float32 {
-	// Raw grayscale only — no manifold expansion. That is the whole point of this baseline.
-	c1 := m.Conv1.Forward(input)
-	a1 := m.ReLU1.ForwardTensor(c1)
-	p1 := m.Pool1.Forward(a1)
-	c2 := m.Conv2.Forward(p1)
-	a2 := m.ReLU2.ForwardTensor(c2)
-	p2 := m.Pool2.Forward(a2)
-	pooled := m.Pool.Forward(p2)
-
-	h := m.FC1.Forward(pooled.Data)
-	hAct := m.ReLU3.Forward(h)
-	hDrop := m.Dropout.Forward(hAct)
-	return m.FC.Forward(hDrop)
-}
-
-func (m *SimpleCNNModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
-	logits := m.Forward(input)
-
-	probs := Softmax(logits)
-	loss := m.LossFn.Forward(probs, targetClass)
-
-	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
-	gradDrop := m.FC.Backward(gradLogits)
-	gradAct := m.Dropout.Backward(gradDrop)
-	gradHidden := m.ReLU3.Backward(gradAct)
-	gradPooled := m.FC1.Backward(gradHidden)
-
-	pooledGrad := &Tensor{
-		Channels: m.Conv2.OutChannels,
-		Height:   m.Pool.TargetH,
-		Width:    m.Pool.TargetW,
-		Data:     gradPooled,
-	}
-	gradP2 := m.Pool.Backward(pooledGrad)
-
-	gradA2 := m.Pool2.Backward(gradP2)
-	gradC2 := m.ReLU2.BackwardTensor(gradA2)
-	gradP1 := m.Conv2.Backward(gradC2)
-
-	gradA1 := m.Pool1.Backward(gradP1)
-	gradC1 := m.ReLU1.BackwardTensor(gradA1)
-	m.Conv1.Backward(gradC1)
-
-	return loss, probs
-}
-
-// SimpleMLPModel implements a fully-connected baseline neural network.
-type SimpleMLPModel struct {
-	NumClasses int
-	Pool       *AdaptiveAvgPool2DLayer
-	FC1        *LinearLayer
-	ReLU       *ReLULayer
-	Dropout    *DropoutLayer
-	FC2        *LinearLayer
-	LossFn     *CategoricalCrossEntropyLoss
-}
-
-// NewSimpleMLPModel constructs a fully-connected baseline neural network.
-func NewSimpleMLPModel(numClasses int, rng *rand.Rand) *SimpleMLPModel {
-	if rng == nil {
-		rng = rand.New(rand.NewSource(42))
-	}
-	pool := NewAdaptiveAvgPool2DLayer(16, 16) // 1x16x16 = 256
-	fc1 := NewLinearLayer(256, 64, rng)
-	dropout := NewDropoutLayer(0.2, rng)
-	fc2 := NewLinearLayer(64, numClasses, rng)
-	lossFn := NewCategoricalCrossEntropyLoss()
-
-	return &SimpleMLPModel{
-		NumClasses: numClasses,
-		Pool:       pool,
-		FC1:        fc1,
-		ReLU:       NewReLULayer(),
-		Dropout:    dropout,
-		FC2:        fc2,
-		LossFn:     lossFn,
-	}
-}
-
-func (m *SimpleMLPModel) Parameters() []*Parameter {
-	return []*Parameter{
-		m.FC1.Weights,
-		m.FC1.Biases,
-		m.FC2.Weights,
-		m.FC2.Biases,
-	}
-}
-
-func (m *SimpleMLPModel) SetTraining(training bool) {
-	m.Dropout.Training = training
-}
-
-func (m *SimpleMLPModel) SnapshotWeights() [][]float32 {
-	params := m.Parameters()
-	snapshot := make([][]float32, len(params))
-	for i, p := range params {
-		if p != nil {
-			snapshot[i] = make([]float32, len(p.Data))
-			copy(snapshot[i], p.Data)
-		}
-	}
-	return snapshot
-}
-
-func (m *SimpleMLPModel) RestoreWeights(snapshot [][]float32) {
-	params := m.Parameters()
-	for i, p := range params {
-		if p != nil && i < len(snapshot) && snapshot[i] != nil {
-			copy(p.Data, snapshot[i])
-		}
-	}
-}
-
-func (m *SimpleMLPModel) Forward(input *Tensor) []float32 {
-	poolOut := m.Pool.Forward(input)
-	fc1Out := m.FC1.Forward(poolOut.Data)
-	reluOut := m.ReLU.Forward(fc1Out)
-	dropOut := m.Dropout.Forward(reluOut)
-	logits := m.FC2.Forward(dropOut)
-	return logits
-}
-
-func (m *SimpleMLPModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
-	poolOut := m.Pool.Forward(input)
-	fc1Out := m.FC1.Forward(poolOut.Data)
-	reluOut := m.ReLU.Forward(fc1Out)
-	dropOut := m.Dropout.Forward(reluOut)
-	logits := m.FC2.Forward(dropOut)
-
-	probs := Softmax(logits)
-	loss := m.LossFn.Forward(probs, targetClass)
-
-	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
-	gradDrop := m.FC2.Backward(gradLogits)
-	gradReLU := m.Dropout.Backward(gradDrop)
-	gradFC1 := m.ReLU.Backward(gradReLU)
-	gradPoolData := m.FC1.Backward(gradFC1)
-
-	gradPoolTensor := &Tensor{
-		Channels: 1,
-		Height:   m.Pool.TargetH,
-		Width:    m.Pool.TargetW,
-		Data:     gradPoolData,
-	}
-	m.Pool.Backward(gradPoolTensor)
-
-	return loss, probs
-}
-
-// BenchmarkResult stores performance metrics for a single architecture run.
-type BenchmarkResult struct {
-	Architecture string  `json:"architecture"`
-	ParamCount   int     `json:"parameters"`
-	TrainTimeMs  int64   `json:"train_time_ms"`
-	FinalLoss    float32 `json:"final_loss"`
-	ValAccuracy  float64 `json:"val_accuracy"`
-	ValMacroF1   float64 `json:"val_macro_f1"`
-}
-
 // CountModelParameters computes the total number of trainable floating-point weights and biases in parameter buffers.
 func CountModelParameters(params []*Parameter) int {
 	total := 0
@@ -4187,510 +3923,540 @@ func CountModelParameters(params []*Parameter) int {
 	return total
 }
 
-// EvaluateModelPredictions runs forward inference across samples and calculates accuracy, Macro-F1, and loss.
-func EvaluateModelPredictions(model TrainableModel, samples []Sample, numClasses int, classNames []string) (float32, float64, float64) {
-	if len(samples) == 0 {
-		return 0, 0, 0
-	}
-	model.SetTraining(false)
-	var totalLoss float32
-
-	matrix := make([][]int, numClasses)
-	for i := 0; i < numClasses; i++ {
-		matrix[i] = make([]int, numClasses)
-	}
-
-	correct := 0
-	lossFn := NewCategoricalCrossEntropyLoss()
-
-	for _, s := range samples {
-		logits := model.Forward(s.Input)
-		probs := Softmax(logits)
-		loss := lossFn.Forward(probs, s.TargetClass)
-		totalLoss += loss
-
-		pred := 0
-		maxP := probs[0]
-		for k := 1; k < len(probs); k++ {
-			if probs[k] > maxP {
-				maxP = probs[k]
-				pred = k
-			}
-		}
-		if s.TargetClass >= 0 && s.TargetClass < numClasses && pred >= 0 && pred < numClasses {
-			matrix[s.TargetClass][pred]++
-			if pred == s.TargetClass {
-				correct++
-			}
-		}
-	}
-
-	acc := float64(correct) / float64(len(samples))
-	var sumF1 float64
-	for c := 0; c < numClasses; c++ {
-		tp := matrix[c][c]
-		fp := 0
-		for a := 0; a < numClasses; a++ {
-			if a != c {
-				fp += matrix[a][c]
-			}
-		}
-		fn := 0
-		for p := 0; p < numClasses; p++ {
-			if p != c {
-				fn += matrix[c][p]
-			}
-		}
-		var prec, rec, f1 float64
-		if tp+fp > 0 {
-			prec = float64(tp) / float64(tp+fp)
-		}
-		if tp+fn > 0 {
-			rec = float64(tp) / float64(tp+fn)
-		}
-		if prec+rec > 0 {
-			f1 = 2.0 * (prec * rec) / (prec + rec)
-		}
-		sumF1 += f1
-	}
-	macroF1 := sumF1 / float64(numClasses)
-	avgLoss := totalLoss / float32(len(samples))
-
-	return avgLoss, acc, macroF1
-}
-
-// TrainBenchmarkModel trains an architecture model on the provided dataset split for the specified epochs.
-func TrainBenchmarkModel(model TrainableModel, trainSamples, valSamples []Sample, numClasses int, epochs int, batchSize int, lr float32) BenchmarkResult {
-	params := model.Parameters()
-	paramCount := CountModelParameters(params)
-
-	opt := NewAdamOptimizer(params, AdamOptimizerConfig{
-		LearningRate: lr,
-		Beta1:        0.9,
-		Beta2:        0.999,
-		Eps:          1e-8,
-		WeightDecay:  1e-4,
-	})
-
-	bestAcc := -1.0
-	var bestWeights [][]float32
-	var finalLoss float32
-
-	startTime := time.Now()
-
-	N := len(trainSamples)
-	indices := make([]int, N)
-	for i := 0; i < N; i++ {
-		indices[i] = i
-	}
-	rng := rand.New(rand.NewSource(42))
-
-	for ep := 1; ep <= epochs; ep++ {
-		model.SetTraining(true)
-		rng.Shuffle(N, func(i, j int) {
-			indices[i], indices[j] = indices[j], indices[i]
-		})
-
-		var epochLoss float32
-		numBatches := (N + batchSize - 1) / batchSize
-
-		for b := 0; b < numBatches; b++ {
-			start := b * batchSize
-			end := start + batchSize
-			if end > N {
-				end = N
-			}
-			currBatchSize := end - start
-			if currBatchSize <= 0 {
-				continue
-			}
-
-			opt.ZeroGrad()
-
-			var batchLoss float32
-			for i := start; i < end; i++ {
-				idx := indices[i]
-				loss, _ := model.ForwardBackward(trainSamples[idx].Input, trainSamples[idx].TargetClass)
-				batchLoss += loss
-			}
-
-			scale := float32(1.0) / float32(currBatchSize)
-			for _, p := range params {
-				if p != nil {
-					for j := range p.Grad {
-						p.Grad[j] *= scale
-					}
-				}
-			}
-
-			opt.Step()
-			epochLoss += batchLoss / float32(currBatchSize)
-		}
-
-		finalLoss = epochLoss / float32(numBatches)
-
-		_, valAcc, _ := EvaluateModelPredictions(model, valSamples, numClasses, nil)
-		if valAcc > bestAcc {
-			bestAcc = valAcc
-			bestWeights = model.SnapshotWeights()
-		}
-	}
-
-	trainTimeMs := time.Since(startTime).Milliseconds()
-
-	if bestWeights != nil {
-		model.RestoreWeights(bestWeights)
-	}
-
-	_, valAcc, valMacroF1 := EvaluateModelPredictions(model, valSamples, numClasses, nil)
-
-	return BenchmarkResult{
-		ParamCount:  paramCount,
-		TrainTimeMs: trainTimeMs,
-		FinalLoss:   finalLoss,
-		ValAccuracy: valAcc,
-		ValMacroF1:  valMacroF1,
-	}
-}
-
-// GenerateSyntheticBenchmarkDataset creates a deterministic synthetic vision dataset of K classes with geometric shapes.
-// All geometry is expressed as a fraction of the canvas so the generator follows InputSize
-// instead of being pinned to a hardcoded 100x100 grid (which would make the benchmark run at a
-// completely different resolution from training).
-func GenerateSyntheticBenchmarkDataset(numClasses int, samplesPerClass int, seed int64) []Sample {
-	rng := rand.New(rand.NewSource(seed))
-	samples := make([]Sample, 0, numClasses*samplesPerClass)
-
-	S := InputSize
-	f := float64(S)
-
-	// Stroke half-width, never thinner than a single pixel at small canvas sizes.
-	stroke := 0.03 * f
-	if stroke < 1.0 {
-		stroke = 1.0
-	}
-	// Inner drawing region [lo, hi).
-	lo := int(0.20 * f)
-	hi := int(0.80 * f)
-
-	for c := 0; c < numClasses; c++ {
-		for s := 0; s < samplesPerClass; s++ {
-			t := NewTensor(1, S, S)
-			cx := int((0.50 + float64(rng.Intn(11)-5)/100.0) * f)
-			cy := int((0.50 + float64(rng.Intn(11)-5)/100.0) * f)
-			radius := int((0.18 + float64(rng.Intn(9))/100.0) * f)
-			if radius < 2 {
-				radius = 2
-			}
-
-			switch c % 5 {
-			case 0: // Circle / Ring
-				for y := 0; y < S; y++ {
-					for x := 0; x < S; x++ {
-						dx := float64(x - cx)
-						dy := float64(y - cy)
-						dist := math.Sqrt(dx*dx + dy*dy)
-						if math.Abs(dist-float64(radius)) <= stroke {
-							t.Set(0, y, x, 0.9)
-						}
-					}
-				}
-			case 1: // Horizontal stripe
-				yMin := cy - radius/2
-				yMax := cy + radius/2
-				for y := yMin; y <= yMax; y++ {
-					if y < 0 || y >= S {
-						continue
-					}
-					for x := lo; x < hi; x++ {
-						t.Set(0, y, x, 0.9)
-					}
-				}
-			case 2: // Vertical stripe
-				xMin := cx - radius/2
-				xMax := cx + radius/2
-				for y := lo; y < hi; y++ {
-					for x := xMin; x <= xMax; x++ {
-						if x < 0 || x >= S {
-							continue
-						}
-						t.Set(0, y, x, 0.9)
-					}
-				}
-			case 3: // Cross / Plus
-				for y := lo; y < hi; y++ {
-					for x := lo; x < hi; x++ {
-						if (math.Abs(float64(x-cx)) <= stroke && math.Abs(float64(y-cy)) <= float64(radius)) ||
-							(math.Abs(float64(y-cy)) <= stroke && math.Abs(float64(x-cx)) <= float64(radius)) {
-							t.Set(0, y, x, 0.9)
-						}
-					}
-				}
-			case 4: // Diagonal Line
-				for d := -radius; d <= radius; d++ {
-					x := cx + d
-					y := cy + d
-					if x >= 0 && x < S && y >= 0 && y < S {
-						t.Set(0, y, x, 0.9)
-					}
-				}
-			}
-			samples = append(samples, Sample{Input: t, TargetClass: c})
-		}
-	}
-	return samples
-}
-
-// ExportBenchmarkCSV writes benchmark comparison results to a standard CSV file.
-func ExportBenchmarkCSV(path string, results []BenchmarkResult) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create CSV file %s: %w", path, err)
-	}
-	defer file.Close()
-
-	writer := bufio.NewWriter(file)
-	writer.WriteString("Architecture,Parameters,TrainTimeMs,FinalLoss,ValAccuracy,ValMacroF1\n")
-	for _, r := range results {
-		line := fmt.Sprintf("%s,%d,%d,%.6f,%.6f,%.6f\n",
-			r.Architecture, r.ParamCount, r.TrainTimeMs, r.FinalLoss, r.ValAccuracy, r.ValMacroF1)
-		writer.WriteString(line)
-	}
-	return writer.Flush()
-}
-
-// RunArchitectureBenchmark executes the 3-model benchmark comparison and writes the results CSV.
-func RunArchitectureBenchmark(dataDir string, epochs int, batchSize int, lr float32, csvOutPath string) ([]BenchmarkResult, error) {
-	fmt.Println("====================================================================================================")
-	fmt.Println("                        DIAGONNET ARCHITECTURE BENCHMARK & COMPARISON")
-	fmt.Println("====================================================================================================")
-
-	var trainSamples, valSamples []Sample
-	var numClasses int
-
-	// 1. Attempt loading from filesystem
-	ds, err := ScanDataset(dataDir)
-	if err == nil && ds.Metadata.NumClasses >= 2 {
-		numClasses = ds.Metadata.NumClasses
-		trainItems, valItems := TrainTestSplit(ds.Samples, 0.20, 42)
-
-		loadItems := func(items []ImageItem) []Sample {
-			res := make([]Sample, 0, len(items))
-			for _, it := range items {
-				gray, err := LoadImageFromFile(it.Path)
-				if err != nil {
-					continue
-				}
-				bbox := FindBoundingBox(gray, 10)
-				if bbox == nil {
-					continue
-				}
-				centered := PadAndCenter(gray, bbox)
-				stretched := ContrastStretch(centered)
-				resized := ResizeBilinear(stretched, InputSize, InputSize)
-				t := GrayImageToTensor(resized)
-				res = append(res, Sample{Input: t, TargetClass: it.ClassIndex})
-			}
-			return res
-		}
-
-		trainSamples = loadItems(trainItems)
-		valSamples = loadItems(valItems)
-		fmt.Printf(" Loaded Dataset from '%s': %d Train / %d Validation samples across %d classes.\n",
-			dataDir, len(trainSamples), len(valSamples), numClasses)
-	}
-
-	// Fallback to deterministic synthetic vision benchmark if dataset empty or unavailable
-	if len(trainSamples) == 0 || len(valSamples) == 0 {
-		numClasses = 5
-		allSynth := GenerateSyntheticBenchmarkDataset(numClasses, 60, 42)
-		trainSamples = allSynth[:200]
-		valSamples = allSynth[200:]
-		fmt.Printf(" Using Synthetic Benchmark Dataset: %d Train / %d Validation samples across %d classes.\n",
-			len(trainSamples), len(valSamples), numClasses)
-	}
-
-	if epochs <= 0 {
-		epochs = 15
-	}
-	if batchSize <= 0 {
-		batchSize = 32
-	}
-	if lr <= 0 {
-		lr = 0.002
-	}
-	if csvOutPath == "" {
-		csvOutPath = filepath.Join("assets", "comparison_results.csv")
-	}
-
-	fmt.Printf(" Config: Epochs=%d | BatchSize=%d | InitialLR=%.4f | Target CSV=%s\n",
-		epochs, batchSize, lr, csvOutPath)
-	fmt.Println("----------------------------------------------------------------------------------------------------")
-
-	results := make([]BenchmarkResult, 3)
-
-	// 1. DiagonNet Model (13-Channel Manifold CNN)
-	fmt.Print(" [1/3] Training DiagonNet (13-Channel Manifold CNN)... ")
-	diagonRng := rand.New(rand.NewSource(42))
-	diagonModel := NewDiagonNetModel(numClasses, diagonRng)
-	res1 := TrainBenchmarkModel(diagonModel, trainSamples, valSamples, numClasses, epochs, batchSize, lr)
-	res1.Architecture = "DiagonNet (13-Ch)"
-	results[0] = res1
-	fmt.Printf("Done (%.2fs | Acc: %.2f%% | Loss: %.4f)\n", float64(res1.TrainTimeMs)/1000.0, res1.ValAccuracy*100.0, res1.FinalLoss)
-
-	// 2. SimpleCNN Model (1-Channel CNN)
-	fmt.Print(" [2/3] Training SimpleCNN (1-Channel Standard CNN)...  ")
-	cnnRng := rand.New(rand.NewSource(42))
-	cnnModel := NewSimpleCNNModel(numClasses, cnnRng)
-	res2 := TrainBenchmarkModel(cnnModel, trainSamples, valSamples, numClasses, epochs, batchSize, lr)
-	res2.Architecture = "SimpleCNN (1-Ch)"
-	results[1] = res2
-	fmt.Printf("Done (%.2fs | Acc: %.2f%% | Loss: %.4f)\n", float64(res2.TrainTimeMs)/1000.0, res2.ValAccuracy*100.0, res2.FinalLoss)
-
-	// 3. SimpleMLP Model (Dense Baseline)
-	fmt.Print(" [3/3] Training SimpleMLP (Fully-Connected Baseline)... ")
-	mlpRng := rand.New(rand.NewSource(42))
-	mlpModel := NewSimpleMLPModel(numClasses, mlpRng)
-	res3 := TrainBenchmarkModel(mlpModel, trainSamples, valSamples, numClasses, epochs, batchSize, lr)
-	res3.Architecture = "SimpleMLP (Dense)"
-	results[2] = res3
-	fmt.Printf("Done (%.2fs | Acc: %.2f%% | Loss: %.4f)\n", float64(res3.TrainTimeMs)/1000.0, res3.ValAccuracy*100.0, res3.FinalLoss)
-
-	// Print Comparative Summary Table
-	fmt.Println("----------------------------------------------------------------------------------------------------")
-	fmt.Printf(" %-18s | %10s | %10s | %10s | %12s | %12s | %12s\n",
-		"Architecture", "Parameters", "Train Time", "Final Loss", "Val Accuracy", "Val Macro-F1", "Delta vs CNN")
-	fmt.Println("----------------------------------------------------------------------------------------------------")
-
-	baselineAcc := results[1].ValAccuracy
-	for _, r := range results {
-		delta := (r.ValAccuracy - baselineAcc) * 100.0
-		deltaStr := fmt.Sprintf("%+6.2f%%", delta)
-		if r.Architecture == "SimpleCNN (1-Ch)" {
-			deltaStr = "Baseline"
-		}
-		fmt.Printf(" %-18s | %10d | %9.2fs | %10.4f | %11.2f%% | %11.2f%% | %12s\n",
-			r.Architecture, r.ParamCount, float64(r.TrainTimeMs)/1000.0, r.FinalLoss, r.ValAccuracy*100.0, r.ValMacroF1*100.0, deltaStr)
-	}
-
-	// Export to CSV
-	if err := ExportBenchmarkCSV(csvOutPath, results); err != nil {
-		fmt.Printf(" [Warning] Failed to export CSV: %v\n", err)
-	} else {
-		fmt.Printf("----------------------------------------------------------------------------------------------------\n")
-		fmt.Printf(" Exported comparative results CSV to: %s\n", csvOutPath)
-	}
-	fmt.Println("====================================================================================================")
-
-	return results, nil
-}
-
 // ============================================================================
-// 9. EMBEDDED HTML5 CANVAS & REAL-TIME WEB INFERENCE ENGINE (Prompts 46 - 48)
+// 8. EMBEDDED HTML5 CANVAS & REAL-TIME WEB INFERENCE ENGINE (Prompts 46 - 48)
 // ============================================================================
 
-// webAppHTML embeds the complete single-page interactive drawing canvas application.
+// webAppHTML embeds the complete single-page interactive drawing canvas application with deep neural diagnostics.
 const webAppHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DiagonNet | Real-Time Neural Drawing Canvas</title>
+<title>DiagonNet | Real-Time Neural Drawing Canvas & Deep Diagnostics</title>
 <style>
   :root {
-    --bg-main: #0b0f19;
-    --bg-card: #151e32;
-    --border-color: #263554;
+    --bg-main: #070b14;
+    --bg-card: #0f172a;
+    --bg-card-alt: #162036;
+    --border-color: #1e293b;
+    --border-bright: #334155;
     --accent-blue: #38bdf8;
     --accent-cyan: #06b6d4;
     --accent-emerald: #10b981;
-    --accent-pink: #ec4899;
+    --accent-amber: #f59e0b;
+    --accent-rose: #f43f5e;
+    --accent-indigo: #6366f1;
+    --accent-purple: #a855f7;
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
+    --text-muted: #64748b;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
   body { background: var(--bg-main); color: var(--text-primary); min-height: 100vh; display: flex; flex-direction: column; }
-  header { background: var(--bg-card); border-bottom: 1px solid var(--border-color); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+  header { background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-color); padding: 0.85rem 1.75rem; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
   .logo-title { display: flex; align-items: center; gap: 0.75rem; font-size: 1.25rem; font-weight: 700; background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .badge { background: #1e293b; border: 1px solid var(--border-color); color: var(--accent-blue); padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; }
-  .main-container { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 2rem; display: grid; grid-template-columns: 440px 1fr; gap: 2rem; }
-  @media (max-width: 900px) { .main-container { grid-template-columns: 1fr; } }
-  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 1rem; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4); }
-  .canvas-wrapper { position: relative; width: 400px; height: 400px; margin: 0 auto; border-radius: 0.75rem; overflow: hidden; border: 2px solid var(--border-color); box-shadow: inset 0 2px 8px rgba(0,0,0,0.5); }
-  canvas { width: 400px; height: 400px; background: #000000; cursor: crosshair; touch-action: none; }
-  .controls { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
-  button { flex: 1; padding: 0.75rem 1rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: all 0.2s; border: none; font-size: 0.9rem; }
-  .btn-clear { background: #334155; color: #f8fafc; border: 1px solid #475569; }
-  .btn-clear:hover { background: #475569; }
+  .header-badges { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  .badge { background: #1e293b; border: 1px solid var(--border-color); color: var(--accent-blue); padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.35rem; }
+  .badge.emerald { color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.08); }
+  .badge.purple { color: var(--accent-purple); border-color: rgba(168, 85, 247, 0.3); background: rgba(168, 85, 247, 0.08); }
+  .main-container { flex: 1; max-width: 1440px; width: 100%; margin: 0 auto; padding: 1.5rem; display: grid; grid-template-columns: 430px 1fr; gap: 1.5rem; }
+  @media (max-width: 1100px) { .main-container { grid-template-columns: 1fr; } }
+  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 0.85rem; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }
+  .canvas-wrapper { position: relative; width: 400px; height: 400px; margin: 0 auto; border-radius: 0.75rem; overflow: hidden; border: 2px solid var(--border-bright); box-shadow: inset 0 2px 12px rgba(0,0,0,0.8), 0 0 20px rgba(56, 189, 248, 0.08); }
+  canvas#paintCanvas { width: 400px; height: 400px; background: #000000; cursor: crosshair; touch-action: none; display: block; }
+  .controls { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+  button { padding: 0.6rem 0.9rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease-in-out; border: none; font-size: 0.85rem; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; }
+  .btn-clear { background: #1e293b; color: #f8fafc; border: 1px solid var(--border-bright); }
+  .btn-clear:hover { background: #334155; }
   .btn-predict { background: linear-gradient(135deg, #0284c7, #06b6d4); color: white; }
-  .btn-predict:hover { opacity: 0.9; transform: translateY(-1px); }
-  .prediction-banner { background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(6, 182, 212, 0.05)); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 0.75rem; padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; }
-  .pred-label-group { display: flex; flex-direction: column; gap: 0.25rem; }
-  .pred-sub { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
-  .pred-name { font-size: 2rem; font-weight: 800; color: var(--accent-blue); }
-  .latency-tag { font-family: monospace; font-size: 0.85rem; color: var(--accent-emerald); background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.35rem 0.65rem; border-radius: 0.5rem; }
-  .class-list { display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; padding-right: 0.25rem; }
-  .class-row { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; }
+  .btn-predict:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3); }
+  .btn-action { background: var(--bg-card-alt); color: var(--text-secondary); border: 1px solid var(--border-bright); padding: 0.35rem 0.65rem; font-size: 0.75rem; border-radius: 0.4rem; }
+  .btn-action:hover { color: var(--text-primary); border-color: var(--accent-blue); background: #1e293b; }
+  .btn-preset { background: #1e293b; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 0.3rem 0.55rem; font-size: 0.75rem; border-radius: 0.35rem; font-family: monospace; }
+  .btn-preset:hover { background: #334155; color: var(--accent-blue); border-color: var(--accent-blue); }
+  .presets-row { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+  .prediction-banner { background: linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(6, 182, 212, 0.04)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 0.75rem; padding: 1rem 1.25rem; display: flex; align-items: center; justify-content: space-between; position: relative; overflow: hidden; }
+  .prediction-banner::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent-blue), var(--accent-emerald), var(--accent-purple)); }
+  .pred-label-group { display: flex; flex-direction: column; gap: 0.15rem; }
+  .pred-sub { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+  .pred-name { font-size: 2.25rem; font-weight: 800; color: var(--accent-blue); line-height: 1.1; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); }
+  .latency-tag { font-family: monospace; font-size: 0.85rem; color: var(--accent-emerald); background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.3rem 0.6rem; border-radius: 0.4rem; }
+  .metric-pill { font-family: monospace; font-size: 0.75rem; color: var(--text-secondary); background: #1e293b; border: 1px solid var(--border-color); padding: 0.2rem 0.5rem; border-radius: 0.35rem; display: inline-flex; align-items: center; gap: 0.3rem; }
+  
+  /* Tabs */
+  .tabs-nav { display: flex; gap: 0.35rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; overflow-x: auto; scrollbar-width: none; }
+  .tab-btn { background: transparent; border: none; color: var(--text-secondary); padding: 0.5rem 0.85rem; font-size: 0.82rem; font-weight: 600; border-radius: 0.4rem; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+  .tab-btn:hover { color: var(--text-primary); background: #1e293b; }
+  .tab-btn.active { color: var(--accent-blue); background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); }
+  .tab-pane { display: none; flex-direction: column; gap: 1rem; animation: fadeIn 0.15s ease-in; }
+  .tab-pane.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Probability Bars */
+  .class-list { display: flex; flex-direction: column; gap: 0.45rem; max-height: 280px; overflow-y: auto; padding-right: 0.35rem; }
+  .class-row { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.82rem; }
   .class-info { display: flex; justify-content: space-between; font-weight: 500; }
-  .progress-bg { height: 8px; background: #1e293b; border-radius: 9999px; overflow: hidden; border: 1px solid #334155; }
-  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 9999px; transition: width 0.15s ease-out; }
+  .progress-bg { height: 7px; background: #1e293b; border-radius: 9999px; overflow: hidden; border: 1px solid #334155; }
+  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 9999px; transition: width 0.12s ease-out; }
   .class-row.top .progress-fill { background: linear-gradient(90deg, var(--accent-emerald), #34d399); }
-  .shortcut-hint { font-size: 0.75rem; color: var(--text-secondary); text-align: center; }
+  
+  /* Stats Grids */
+  .stat-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
+  .stat-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+  .stat-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+  @media (max-width: 700px) { .stat-grid-4, .stat-grid-3 { grid-template-columns: repeat(2, 1fr); } }
+  .stat-box { background: var(--bg-card-alt); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 0.65rem 0.8rem; display: flex; flex-direction: column; gap: 0.2rem; }
+  .stat-box-title { font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; letter-spacing: 0.05em; }
+  .stat-box-val { font-size: 1.15rem; font-weight: 700; color: var(--text-primary); font-family: monospace; }
+  .stat-box-val.accent { color: var(--accent-blue); }
+  .stat-box-val.emerald { color: var(--accent-emerald); }
+  .stat-box-val.amber { color: var(--accent-amber); }
+  .stat-box-val.purple { color: var(--accent-purple); }
+  .stat-box-sub { font-size: 0.7rem; color: var(--text-secondary); }
+
+  /* 13-Manifold Heatmaps */
+  .manifold-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); gap: 0.6rem; max-height: 440px; overflow-y: auto; padding-right: 0.35rem; }
+  .manifold-card { background: var(--bg-card-alt); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 0.5rem; display: flex; flex-direction: column; align-items: center; gap: 0.35rem; cursor: pointer; transition: transform 0.15s, border-color 0.15s; }
+  .manifold-card:hover { transform: translateY(-2px); border-color: var(--accent-blue); }
+  .manifold-card canvas { width: 84px; height: 84px; image-rendering: pixelated; border-radius: 0.35rem; background: #000; border: 1px solid var(--border-bright); }
+  .manifold-title { font-size: 0.68rem; font-weight: 600; color: var(--text-secondary); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+  .manifold-sub { font-size: 0.65rem; color: var(--text-muted); font-family: monospace; }
+
+  /* Timing Chart */
+  .stage-bar-wrapper { display: flex; height: 16px; border-radius: 9999px; overflow: hidden; background: #1e293b; border: 1px solid var(--border-bright); margin: 0.4rem 0; }
+  .stage-segment { height: 100%; transition: width 0.15s; }
+  .stage-legend { display: flex; flex-wrap: wrap; gap: 0.6rem; font-size: 0.72rem; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+  /* Dense Vector Visualizer */
+  .vector-chart { display: flex; align-items: flex-end; gap: 2px; height: 64px; background: var(--bg-card-alt); padding: 6px 8px; border-radius: 0.5rem; border: 1px solid var(--border-color); overflow-x: auto; }
+  .vector-bar { flex: 1; min-width: 2px; background: var(--accent-blue); border-radius: 1px; transition: height 0.1s; }
+  
+  /* Tables */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; text-align: left; }
+  .data-table th { color: var(--text-muted); font-weight: 600; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border-color); text-transform: uppercase; font-size: 0.68rem; }
+  .data-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid rgba(30, 41, 59, 0.6); color: var(--text-secondary); font-family: monospace; }
+  .data-table tr:hover td { background: rgba(56, 189, 248, 0.04); color: var(--text-primary); }
+
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(4px); z-index: 100; display: none; align-items: center; justify-content: center; padding: 1rem; }
+  .modal-overlay.active { display: flex; }
+  .modal-box { background: var(--bg-card); border: 1px solid var(--border-bright); border-radius: 0.85rem; max-width: 520px; width: 100%; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 20px 40px rgba(0,0,0,0.8); }
 </style>
 </head>
 <body>
   <header>
     <div class="logo-title">
       <span>⬡</span>
-      <span>DiagonNet 13-Manifold Web Engine</span>
+      <span>DiagonNet 13-Manifold Neural Engine</span>
     </div>
-    <div class="badge">Pure Go Zero-Dep Runtime</div>
+    <div class="header-badges">
+      <span class="badge" id="hdrCores">⚡ CPU Cores: &mdash;</span>
+      <span class="badge emerald" id="hdrFps">FPS: &mdash;</span>
+      <span class="badge purple" id="hdrMem">RAM: &mdash;</span>
+      <button class="btn-action" id="btnExportJson">📥 Export Telemetry</button>
+    </div>
   </header>
+
   <div class="main-container">
-    <div class="card">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-weight: 600;">Interactive Sketch Canvas</span>
-        <span style="font-size: 0.8rem; color: var(--text-secondary);">400 &times; 400 px</span>
-      </div>
-      <div class="canvas-wrapper">
-        <canvas id="paintCanvas" width="400" height="400"></canvas>
-      </div>
-      <div class="controls">
-        <button class="btn-clear" id="btnClear">Clear Canvas (C)</button>
-        <div style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-secondary);">
-          <span>Brush:</span>
-          <input id="brushSize" type="range" min="12" max="36" value="22" style="accent-color: var(--accent-blue); cursor: pointer; width: 80px;">
+    <!-- Left Column: Canvas, Presets, Morphology -->
+    <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-weight: 700; font-size: 0.95rem;">Interactive Sketch Canvas</span>
+          <span style="font-size: 0.78rem; color: var(--text-secondary);" id="canvasDimLabel">400 &times; 400 px</span>
         </div>
-        <button class="btn-predict" id="btnPredict">Predict</button>
+        <div class="canvas-wrapper">
+          <canvas id="paintCanvas" width="400" height="400"></canvas>
+        </div>
+        <div class="controls">
+          <button class="btn-clear" id="btnClear">Clear (C)</button>
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--text-secondary);">
+            <span>Brush:</span>
+            <input id="brushSize" type="range" min="10" max="40" value="22" style="accent-color: var(--accent-blue); cursor: pointer; width: 70px;">
+            <span id="brushVal" style="font-family: monospace; min-width: 20px;">22</span>
+          </div>
+          <button class="btn-predict" id="btnPredict">Predict (↵)</button>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: var(--text-secondary); padding-top: 0.25rem;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="chkAutoPredict" checked style="accent-color: var(--accent-emerald);">
+            <span>Live Continuous Autograd</span>
+          </label>
+          <span style="font-size: 0.72rem; color: var(--text-muted);">Shortcuts: <b>C</b> / <b>Esc</b></span>
+        </div>
       </div>
-      <div class="shortcut-hint">Shortcuts: <b>C</b> / <b>Esc</b> to Clear | Real-Time Continuous Autograd</div>
+
+      <!-- Quick Draw Presets -->
+      <div class="card" style="padding: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.82rem; font-weight: 600;">
+          <span>⚡ Quick Sample Presets</span>
+          <span style="font-size: 0.72rem; color: var(--text-muted);">Click to inject test pattern</span>
+        </div>
+        <div class="presets-row" id="presetsRow">
+          <button class="btn-preset" data-preset="0">0</button>
+          <button class="btn-preset" data-preset="1">1</button>
+          <button class="btn-preset" data-preset="2">2</button>
+          <button class="btn-preset" data-preset="3">3</button>
+          <button class="btn-preset" data-preset="4">4</button>
+          <button class="btn-preset" data-preset="5">5</button>
+          <button class="btn-preset" data-preset="6">6</button>
+          <button class="btn-preset" data-preset="7">7</button>
+          <button class="btn-preset" data-preset="8">8</button>
+          <button class="btn-preset" data-preset="9">9</button>
+          <button class="btn-preset" data-preset="Circle">Circle</button>
+          <button class="btn-preset" data-preset="Cross">Cross</button>
+          <button class="btn-preset" data-preset="Box">Box</button>
+          <button class="btn-preset" data-preset="Diagonal">Diagonal</button>
+        </div>
+      </div>
+
+      <!-- Input Spatial Geometry Card -->
+      <div class="card" style="padding: 1rem;">
+        <div style="font-weight: 600; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center;">
+          <span>📐 Input Spatial Morphology</span>
+          <span class="badge" style="font-size: 0.7rem;">28&times;28 Resampled</span>
+        </div>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem;">
+            <canvas id="preview28Canvas" width="28" height="28" style="width: 84px; height: 84px; image-rendering: pixelated; border-radius: 0.4rem; background: #000; border: 1px solid var(--border-bright);"></canvas>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">Centered Tensor</span>
+          </div>
+          <div style="flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 0.45rem; font-size: 0.75rem;">
+            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
+              <span class="stat-box-title">BBox Size</span>
+              <span class="stat-box-val" id="geomBBoxDim" style="font-size: 0.9rem;">&mdash;</span>
+            </div>
+            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
+              <span class="stat-box-title">Aspect Ratio</span>
+              <span class="stat-box-val" id="geomAspect" style="font-size: 0.9rem;">&mdash;</span>
+            </div>
+            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
+              <span class="stat-box-title">Stroke Mass</span>
+              <span class="stat-box-val" id="geomFgCount" style="font-size: 0.9rem;">&mdash;</span>
+            </div>
+            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
+              <span class="stat-box-title">Fill Density</span>
+              <span class="stat-box-val" id="geomDensity" style="font-size: 0.9rem;">&mdash;</span>
+            </div>
+          </div>
+        </div>
+        <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; justify-content: space-between; font-family: monospace;">
+          <span>Centroid: <span id="geomCentroid" style="color: var(--text-secondary);">&mdash;</span></span>
+          <span>Coverage: <span id="geomCoverage" style="color: var(--text-secondary);">&mdash;</span></span>
+        </div>
+      </div>
     </div>
-    <div class="card">
+
+    <!-- Right Column: Deep Diagnostics & Tabs -->
+    <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+      <!-- Hero Prediction Banner -->
       <div class="prediction-banner">
         <div class="pred-label-group">
-          <span class="pred-sub">Top Predicted Class</span>
+          <span class="pred-sub">Top Predicted Class &bull; 13-Manifold CNN</span>
           <span class="pred-name" id="topClass">&mdash;</span>
+          <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
+            <span class="metric-pill" id="marginBadge">Margin: &mdash;</span>
+            <span class="metric-pill" id="entropyBadge">Entropy: &mdash;</span>
+          </div>
         </div>
         <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem;">
-          <span id="topConfidence" style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary);">0.0%</span>
+          <span id="topConfidence" style="font-size: 2rem; font-weight: 800; color: var(--text-primary);">0.0%</span>
           <span class="latency-tag" id="latencyBadge">&mdash; ms</span>
+          <span style="font-size: 0.72rem; color: var(--text-muted); font-family: monospace;" id="fpsBadge">&mdash; inf/sec</span>
         </div>
       </div>
-      <div style="font-weight: 600; font-size: 0.95rem; margin-top: 0.5rem;">Class Probability Distribution</div>
-      <div class="class-list" id="classList">
-        <div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Draw on the canvas to evaluate live probabilities.</div>
+
+      <!-- Navigation Tabs -->
+      <div class="tabs-nav">
+        <button class="tab-btn active" data-tab="tab-probs">📊 Class Probabilities</button>
+        <button class="tab-btn" data-tab="tab-perf">⚡ Performance &amp; Profiler</button>
+        <button class="tab-btn" data-tab="tab-manifold">🧬 13-Channel Manifold</button>
+        <button class="tab-btn" data-tab="tab-layers">🧠 Layer Activations</button>
+        <button class="tab-btn" data-tab="tab-arch">⚙️ Model Architecture</button>
+      </div>
+
+      <!-- Tab 1: Probabilities & Decision Theory -->
+      <div class="tab-pane active" id="tab-probs">
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 700; font-size: 0.9rem;">Softmax Probability Distribution</span>
+            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--text-secondary);">
+              <span>Temperature T:</span>
+              <input type="range" id="tempSlider" min="0.2" max="2.5" step="0.1" value="1.0" style="width: 75px; accent-color: var(--accent-cyan); cursor: pointer;">
+              <span id="tempVal" style="font-family: monospace;">1.0</span>
+            </div>
+          </div>
+
+          <div class="class-list" id="classList">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Draw on the canvas to evaluate live class probabilities.</div>
+          </div>
+
+          <!-- Information Theory Metrics -->
+          <div style="font-weight: 700; font-size: 0.85rem; margin-top: 0.5rem;">Information-Theoretic Decision Metrics</div>
+          <div class="stat-grid-4">
+            <div class="stat-box">
+              <span class="stat-box-title">Shannon Entropy</span>
+              <span class="stat-box-val accent" id="infoEntropy">&mdash;</span>
+              <span class="stat-box-sub" id="infoEntropyMax">Max: &mdash; bits</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Uncertainty</span>
+              <span class="stat-box-val amber" id="infoUncertainty">&mdash;</span>
+              <span class="stat-box-sub">Normalized Index</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Perplexity</span>
+              <span class="stat-box-val emerald" id="infoPerplexity">&mdash;</span>
+              <span class="stat-box-sub">2^H Candidates</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Gini Impurity</span>
+              <span class="stat-box-val purple" id="infoGini">&mdash;</span>
+              <span class="stat-box-sub">1 - ∑ p_i^2</span>
+            </div>
+          </div>
+
+          <!-- Raw Logits vs Softmax Table -->
+          <div style="font-weight: 700; font-size: 0.85rem; margin-top: 0.5rem;">Top Class Logits &amp; Softmax Scores</div>
+          <div style="max-height: 160px; overflow-y: auto;">
+            <table class="data-table" id="logitsTable">
+              <thead>
+                <tr>
+                  <th>Class</th>
+                  <th>Raw Logit (z_i)</th>
+                  <th>Exp(z_i / T)</th>
+                  <th>Softmax P(y=i)</th>
+                </tr>
+              </thead>
+              <tbody id="logitsTableBody">
+                <tr><td colspan="4" style="text-align:center;">No data available</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Performance Profiler -->
+      <div class="tab-pane" id="tab-perf">
+        <div class="card">
+          <div style="font-weight: 700; font-size: 0.9rem;">Sub-Millisecond Inference Pipeline Breakdown</div>
+          
+          <!-- Stacked Timing Bar -->
+          <div class="stage-bar-wrapper" id="stageTimingBar">
+            <div class="stage-segment" style="width: 20%; background: var(--accent-blue);" title="Preprocess"></div>
+            <div class="stage-segment" style="width: 25%; background: var(--accent-purple);" title="Manifold"></div>
+            <div class="stage-segment" style="width: 35%; background: var(--accent-cyan);" title="Conv1 & 2"></div>
+            <div class="stage-segment" style="width: 15%; background: var(--accent-emerald);" title="Dense"></div>
+            <div class="stage-segment" style="width: 5%; background: var(--accent-amber);" title="Softmax"></div>
+          </div>
+
+          <div class="stage-legend">
+            <span><span class="legend-dot" style="background: var(--accent-blue);"></span> Preprocess</span>
+            <span><span class="legend-dot" style="background: var(--accent-purple);"></span> 13-Manifold</span>
+            <span><span class="legend-dot" style="background: var(--accent-cyan);"></span> Conv Stages</span>
+            <span><span class="legend-dot" style="background: var(--accent-emerald);"></span> Dense Head</span>
+            <span><span class="legend-dot" style="background: var(--accent-amber);"></span> Softmax</span>
+          </div>
+
+          <table class="data-table" style="margin-top: 0.5rem;">
+            <thead>
+              <tr>
+                <th>Pipeline Stage</th>
+                <th>Latency (µs)</th>
+                <th>Latency (ms)</th>
+                <th>Share (%)</th>
+              </tr>
+            </thead>
+            <tbody id="timingTableBody">
+              <tr><td>Preprocessing &amp; BBox</td><td id="tPreUs">&mdash;</td><td id="tPreMs">&mdash;</td><td id="tPrePct">&mdash;</td></tr>
+              <tr><td>13-Manifold Spatial Calculus</td><td id="tManUs">&mdash;</td><td id="tManMs">&mdash;</td><td id="tManPct">&mdash;</td></tr>
+              <tr><td>Conv1 &amp; Conv2 Convolutions</td><td id="tConvUs">&mdash;</td><td id="tConvMs">&mdash;</td><td id="tConvPct">&mdash;</td></tr>
+              <tr><td>Adaptive Pool &amp; Dense FC1/FC2</td><td id="tDenseUs">&mdash;</td><td id="tDenseMs">&mdash;</td><td id="tDensePct">&mdash;</td></tr>
+              <tr><td>Softmax &amp; Decision Logic</td><td id="tSoftUs">&mdash;</td><td id="tSoftMs">&mdash;</td><td id="tSoftPct">&mdash;</td></tr>
+              <tr style="font-weight: 700; color: var(--text-primary);"><td>Total End-to-End Latency</td><td id="tTotUs">&mdash;</td><td id="tTotMs">&mdash;</td><td>100.0%</td></tr>
+            </tbody>
+          </table>
+
+          <div style="font-weight: 700; font-size: 0.85rem; margin-top: 0.6rem;">Host Engine &amp; Go Runtime Health</div>
+          <div class="stat-grid-4">
+            <div class="stat-box">
+              <span class="stat-box-title">Engine Speed</span>
+              <span class="stat-box-val emerald" id="perfThroughput">&mdash;</span>
+              <span class="stat-box-sub">Inferences / sec</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Avg Latency (30f)</span>
+              <span class="stat-box-val accent" id="perfAvgLatency">&mdash;</span>
+              <span class="stat-box-sub">Rolling Window</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Go Heap Alloc</span>
+              <span class="stat-box-val purple" id="perfHeapAlloc">&mdash;</span>
+              <span class="stat-box-sub">Active Memory</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">GC Cycles</span>
+              <span class="stat-box-val amber" id="perfNumGC">&mdash;</span>
+              <span class="stat-box-sub">Total Collections</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: 13-Channel Manifold -->
+      <div class="tab-pane" id="tab-manifold">
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <span style="font-weight: 700; font-size: 0.9rem;">13-Channel Spatial Difference Manifold</span>
+              <div style="font-size: 0.72rem; color: var(--text-muted);">Base Grayscale + 4 Diagonal Derivatives + 8 Chess Knight-Move Operators</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem;">
+              <span>Colormap:</span>
+              <select id="cmapSelect" style="background: var(--bg-card-alt); border: 1px solid var(--border-bright); color: var(--text-primary); padding: 0.25rem 0.5rem; border-radius: 0.35rem; font-size: 0.75rem;">
+                <option value="turbo">Turbo (Thermal)</option>
+                <option value="neon" selected>Neon Cyan</option>
+                <option value="emerald">Emerald</option>
+                <option value="gray">Grayscale</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="manifold-grid" id="manifoldGrid">
+            <!-- 13 Channel Cards generated dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Layer Activations -->
+      <div class="tab-pane" id="tab-layers">
+        <div class="card">
+          <div style="font-weight: 700; font-size: 0.9rem;">Feature Hierarchy &amp; Intermediate Activations</div>
+          <div style="font-size: 0.75rem; color: var(--text-secondary); background: var(--bg-card-alt); padding: 0.6rem; border-radius: 0.4rem; border: 1px solid var(--border-color); font-family: monospace;">
+            [1×28×28] ➔ [13×28×28] ➔ Conv1[16×28×28] ➔ MaxPool[16×14×14] ➔ Conv2[32×14×14] ➔ MaxPool[32×7×7] ➔ Pool[32×4×4=512] ➔ FC1[128] ➔ FC2[K]
+          </div>
+
+          <div class="stat-grid-3">
+            <div class="stat-box">
+              <span class="stat-box-title">Conv1 Activation</span>
+              <span class="stat-box-val accent" id="actConv1Mean">&mdash;</span>
+              <span class="stat-box-sub" id="actConv1Sparsity">Sparsity: &mdash;%</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Conv2 Activation</span>
+              <span class="stat-box-val cyan" id="actConv2Mean">&mdash;</span>
+              <span class="stat-box-sub" id="actConv2Sparsity">Sparsity: &mdash;%</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">512-D Latent Norm</span>
+              <span class="stat-box-val emerald" id="actPoolNorm">&mdash;</span>
+              <span class="stat-box-sub">AdaptiveAvgPool L2</span>
+            </div>
+          </div>
+
+          <!-- FC1 128-Neuron Vector Visualizer -->
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+              <span style="font-weight: 600; font-size: 0.8rem;">FC1 Dense Hidden Vector (128 Dimensions)</span>
+              <span style="font-size: 0.72rem; color: var(--text-muted);" id="fc1ActiveLabel">Active: &mdash; / 128</span>
+            </div>
+            <div class="vector-chart" id="fc1VectorChart">
+              <!-- 128 bars generated dynamically -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 5: Model Architecture Specs -->
+      <div class="tab-pane" id="tab-arch">
+        <div class="card">
+          <div style="font-weight: 700; font-size: 0.9rem;">DiagonNet Architecture &amp; Parameter Topology</div>
+          
+          <div class="stat-grid-3">
+            <div class="stat-box">
+              <span class="stat-box-title">Total Parameters</span>
+              <span class="stat-box-val accent" id="archTotalParams">&mdash;</span>
+              <span class="stat-box-sub" id="archWeightsSize">&mdash; KB Memory</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Inference FLOPs</span>
+              <span class="stat-box-val emerald">~4.88 MFLOPs</span>
+              <span class="stat-box-sub">Sub-8ms CPU Target</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-title">Binary Format</span>
+              <span class="stat-box-val purple">DIAGON01</span>
+              <span class="stat-box-sub">LittleEndian Float32</span>
+            </div>
+          </div>
+
+          <table class="data-table" style="margin-top: 0.5rem;">
+            <thead>
+              <tr>
+                <th>Layer Name</th>
+                <th>Type</th>
+                <th>Input Dim</th>
+                <th>Output Dim</th>
+                <th>Trainable Parameters</th>
+              </tr>
+            </thead>
+            <tbody id="archTableBody">
+              <tr><td>13-Ch Spatial Manifold</td><td>ManifoldCalculus</td><td>1 &times; 28 &times; 28</td><td>13 &times; 28 &times; 28</td><td>0 (Pure Calculus)</td></tr>
+              <tr><td>Conv2D Stage 1</td><td>Conv2D (K=3, S=1, P=1)</td><td>13 &times; 28 &times; 28</td><td>16 &times; 28 &times; 28</td><td>1,888 (1,872 W + 16 B)</td></tr>
+              <tr><td>ReLU1 + MaxPool1</td><td>ReLU + MaxPool2D(2)</td><td>16 &times; 28 &times; 28</td><td>16 &times; 14 &times; 14</td><td>0</td></tr>
+              <tr><td>Conv2D Stage 2</td><td>Conv2D (K=3, S=1, P=1)</td><td>16 &times; 14 &times; 14</td><td>32 &times; 14 &times; 14</td><td>4,640 (4,608 W + 32 B)</td></tr>
+              <tr><td>ReLU2 + MaxPool2</td><td>ReLU + MaxPool2D(2)</td><td>32 &times; 14 &times; 14</td><td>32 &times; 7 &times; 7</td><td>0</td></tr>
+              <tr><td>Adaptive AvgPool</td><td>AdaptiveAvgPool2D(4x4)</td><td>32 &times; 7 &times; 7</td><td>32 &times; 4 &times; 4 (512)</td><td>0</td></tr>
+              <tr><td>Dense Head FC1</td><td>Linear + ReLU + Drop(0.2)</td><td>512</td><td>128</td><td>65,664 (65,536 W + 128 B)</td></tr>
+              <tr><td>Classifier Head FC</td><td>Linear + Softmax</td><td>128</td><td id="archOutputClasses">K Classes</td><td id="archFCParams">&mdash;</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
+
+  <!-- Channel Zoom Modal -->
+  <div class="modal-overlay" id="channelModal">
+    <div class="modal-box">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-weight: 700;" id="modalChannelTitle">Channel Details</span>
+        <button class="btn-action" id="modalCloseBtn">&times; Close</button>
+      </div>
+      <div style="display: flex; justify-content: center; padding: 1rem 0;">
+        <canvas id="modalCanvas" width="28" height="28" style="width: 224px; height: 224px; image-rendering: pixelated; border-radius: 0.5rem; background: #000; border: 2px solid var(--border-bright);"></canvas>
+      </div>
+      <div class="stat-grid-3">
+        <div class="stat-box">
+          <span class="stat-box-title">Mean Energy</span>
+          <span class="stat-box-val accent" id="modalEnergy">&mdash;</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-box-title">Peak Value</span>
+          <span class="stat-box-val emerald" id="modalPeak">&mdash;</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-box-title">Sparsity</span>
+          <span class="stat-box-val amber" id="modalSparsity">&mdash;</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
 <script>
   const canvas = document.getElementById('paintCanvas');
   const ctx = canvas.getContext('2d');
   const brushSlider = document.getElementById('brushSize');
+  const brushVal = document.getElementById('brushVal');
+  const chkAuto = document.getElementById('chkAutoPredict');
+  const prev28Canvas = document.getElementById('preview28Canvas');
+  const prev28Ctx = prev28Canvas ? prev28Canvas.getContext('2d') : null;
+  const tempSlider = document.getElementById('tempSlider');
+  const tempVal = document.getElementById('tempVal');
+  const cmapSelect = document.getElementById('cmapSelect');
+
   ctx.fillStyle = '#000000';
   ctx.fillRect(0, 0, 400, 400);
   ctx.strokeStyle = '#ffffff';
@@ -4698,15 +4464,30 @@ const webAppHTML = `<!DOCTYPE html>
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  if (brushSlider) {
+  if (brushSlider && brushVal) {
     brushSlider.addEventListener('input', () => {
       ctx.lineWidth = parseInt(brushSlider.value);
+      brushVal.innerText = brushSlider.value;
     });
   }
 
   let drawing = false;
   let hasDrawn = false;
   let debounceTimer = null;
+  let lastTelemetry = null;
+  let rollingLatencies = [];
+
+  // Tab switching
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      const targetId = btn.getAttribute('data-tab');
+      const targetPane = document.getElementById(targetId);
+      if (targetPane) targetPane.classList.add('active');
+    });
+  });
 
   function getPos(e) {
     const rect = canvas.getBoundingClientRect();
@@ -4732,7 +4513,9 @@ const webAppHTML = `<!DOCTYPE html>
     const pos = getPos(e);
     ctx.lineTo(pos.x, pos.y);
     ctx.stroke();
-    schedulePredict();
+    if (chkAuto && chkAuto.checked) {
+      schedulePredict();
+    }
   }
 
   function endDraw() {
@@ -4746,7 +4529,6 @@ const webAppHTML = `<!DOCTYPE html>
   canvas.addEventListener('mousedown', startDraw);
   canvas.addEventListener('mousemove', draw);
   window.addEventListener('mouseup', endDraw);
-
   canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDraw(e); }, { passive: false });
   canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
   window.addEventListener('touchend', endDraw);
@@ -4758,7 +4540,23 @@ const webAppHTML = `<!DOCTYPE html>
     document.getElementById('topClass').innerText = '—';
     document.getElementById('topConfidence').innerText = '0.0%';
     document.getElementById('latencyBadge').innerText = '— ms';
+    document.getElementById('fpsBadge').innerText = '— inf/sec';
+    document.getElementById('marginBadge').innerText = 'Margin: —';
+    document.getElementById('entropyBadge').innerText = 'Entropy: —';
+    if (prev28Ctx) {
+      prev28Ctx.fillStyle = '#000000';
+      prev28Ctx.fillRect(0, 0, 28, 28);
+    }
     document.getElementById('classList').innerHTML = '<div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Canvas cleared. Draw a sketch.</div>';
+    resetStats();
+  }
+
+  function resetStats() {
+    ['geomBBoxDim', 'geomAspect', 'geomFgCount', 'geomDensity', 'geomCentroid', 'geomCoverage',
+     'infoEntropy', 'infoUncertainty', 'infoPerplexity', 'infoGini'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerText = '—';
+    });
   }
 
   document.getElementById('btnClear').addEventListener('click', clearCanvas);
@@ -4767,12 +4565,89 @@ const webAppHTML = `<!DOCTYPE html>
   window.addEventListener('keydown', (e) => {
     if (e.key === 'c' || e.key === 'C' || e.key === 'Escape') {
       clearCanvas();
+    } else if (e.key === 'Enter') {
+      triggerPredict();
     }
   });
 
+  // Presets drawing handler
+  document.querySelectorAll('.btn-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const preset = btn.getAttribute('data-preset');
+      drawPreset(preset);
+    });
+  });
+
+  function drawPreset(preset) {
+    clearCanvas();
+    hasDrawn = true;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = parseInt(brushSlider ? brushSlider.value : 22);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    switch(preset) {
+      case '0':
+      case 'Circle':
+        ctx.ellipse(200, 200, 90, 120, 0, 0, 2 * Math.PI);
+        break;
+      case '1':
+        ctx.moveTo(170, 90); ctx.lineTo(200, 60); ctx.lineTo(200, 340);
+        break;
+      case '2':
+        ctx.moveTo(130, 120);
+        ctx.bezierCurveTo(130, 60, 270, 60, 270, 140);
+        ctx.bezierCurveTo(270, 210, 130, 270, 130, 340);
+        ctx.lineTo(270, 340);
+        break;
+      case '3':
+        ctx.moveTo(130, 80); ctx.lineTo(260, 80); ctx.lineTo(190, 180);
+        ctx.bezierCurveTo(260, 180, 270, 320, 130, 320);
+        break;
+      case '4':
+        ctx.moveTo(230, 70); ctx.lineTo(120, 240); ctx.lineTo(270, 240);
+        ctx.moveTo(230, 70); ctx.lineTo(230, 330);
+        break;
+      case '5':
+        ctx.moveTo(250, 80); ctx.lineTo(140, 80); ctx.lineTo(130, 180);
+        ctx.bezierCurveTo(200, 160, 270, 190, 260, 280);
+        ctx.bezierCurveTo(250, 330, 180, 340, 130, 320);
+        break;
+      case '6':
+        ctx.moveTo(240, 90);
+        ctx.bezierCurveTo(140, 110, 120, 220, 120, 260);
+        ctx.ellipse(200, 260, 80, 75, 0, 0, 2 * Math.PI);
+        break;
+      case '7':
+        ctx.moveTo(130, 80); ctx.lineTo(270, 80); ctx.lineTo(160, 330);
+        break;
+      case '8':
+        ctx.ellipse(200, 130, 60, 55, 0, 0, 2 * Math.PI);
+        ctx.ellipse(200, 255, 75, 70, 0, 0, 2 * Math.PI);
+        break;
+      case '9':
+        ctx.ellipse(200, 140, 75, 70, 0, 0, 2 * Math.PI);
+        ctx.moveTo(275, 140); ctx.lineTo(275, 270);
+        ctx.bezierCurveTo(275, 330, 170, 340, 140, 310);
+        break;
+      case 'Cross':
+        ctx.moveTo(200, 70); ctx.lineTo(200, 330);
+        ctx.moveTo(70, 200); ctx.lineTo(330, 200);
+        break;
+      case 'Box':
+        ctx.rect(90, 90, 220, 220);
+        break;
+      case 'Diagonal':
+        ctx.moveTo(80, 80); ctx.lineTo(320, 320);
+        break;
+    }
+    ctx.stroke();
+    triggerPredict();
+  }
+
   function schedulePredict() {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(triggerPredict, 60);
+    debounceTimer = setTimeout(triggerPredict, 40);
   }
 
   async function triggerPredict() {
@@ -4786,10 +4661,67 @@ const webAppHTML = `<!DOCTYPE html>
       });
       if (!resp.ok) return;
       const data = await resp.json();
+      lastTelemetry = data;
       renderPrediction(data);
     } catch (err) {
       console.error('Predict error:', err);
     }
+  }
+
+  // Colormap utilities for heatmaps
+  function getTurboColor(t) {
+    const r = Math.min(255, Math.max(0, Math.round(255 * (0.1357 + 4.5 * t - 14.5 * t * t + 16.5 * t * t * t - 6.5 * t * t * t * t))));
+    const g = Math.min(255, Math.max(0, Math.round(255 * (0.0914 + 2.1 * t + 4.8 * t * t - 14.1 * t * t * t + 8.1 * t * t * t * t))));
+    const b = Math.min(255, Math.max(0, Math.round(255 * (0.1067 + 12.5 * t - 37.0 * t * t + 36.5 * t * t * t - 12.0 * t * t * t * t))));
+    return [r, g, b];
+  }
+
+  function getColormapColor(val, cmap) {
+    const t = Math.max(0, Math.min(1, val / 255.0));
+    if (cmap === 'turbo') return getTurboColor(t);
+    if (cmap === 'emerald') return [Math.round(16 * t), Math.round(185 * t + 70 * t * t), Math.round(129 * t)];
+    if (cmap === 'gray') return [val, val, val];
+    // Neon Cyan (default)
+    return [Math.round(6 * t + 30 * t * t), Math.round(182 * t + 73 * t * t), Math.round(212 * t + 43 * t * t)];
+  }
+
+  if (cmapSelect) {
+    cmapSelect.addEventListener('change', () => {
+      if (lastTelemetry && lastTelemetry.stats) {
+        renderManifold(lastTelemetry.stats.manifold);
+      }
+    });
+  }
+
+  // Temperature slider recalibration
+  if (tempSlider && tempVal) {
+    tempSlider.addEventListener('input', () => {
+      const T = parseFloat(tempSlider.value);
+      tempVal.innerText = T.toFixed(1);
+      if (lastTelemetry && lastTelemetry.stats && lastTelemetry.stats.raw_logits) {
+        recalculateTemperature(T);
+      }
+    });
+  }
+
+  function recalculateTemperature(T) {
+    const logits = lastTelemetry.stats.raw_logits;
+    if (!logits || logits.length === 0) return;
+    const maxL = Math.max(...logits);
+    let sumExp = 0;
+    const expVals = logits.map(z => {
+      const e = Math.exp((z - maxL) / T);
+      sumExp += e;
+      return e;
+    });
+    const newProbs = expVals.map(e => e / sumExp);
+    
+    // Update confidences in copy
+    const confs = lastTelemetry.confidences.map((c, i) => ({
+      ...c,
+      confidence: newProbs[i]
+    }));
+    renderProbabilityList(confs);
   }
 
   function renderPrediction(data) {
@@ -4799,13 +4731,70 @@ const webAppHTML = `<!DOCTYPE html>
       document.getElementById('latencyBadge').innerText = data.latency_ms.toFixed(2) + ' ms';
       return;
     }
+
+    // Rolling latency & FPS
+    rollingLatencies.push(data.latency_ms);
+    if (rollingLatencies.length > 30) rollingLatencies.shift();
+    const avgLat = rollingLatencies.reduce((a, b) => a + b, 0) / rollingLatencies.length;
+    const fps = data.latency_ms > 0 ? (1000.0 / data.latency_ms).toFixed(0) : '999';
+
+    // Hero Banner
     document.getElementById('topClass').innerText = data.predicted_class;
     document.getElementById('topConfidence').innerText = (data.confidence * 100).toFixed(1) + '%';
     document.getElementById('latencyBadge').innerText = '⚡ ' + data.latency_ms.toFixed(2) + ' ms';
+    document.getElementById('fpsBadge').innerText = fps + ' inf/sec';
+    const hdrFps = document.getElementById('hdrFps');
+    if (hdrFps) hdrFps.innerText = 'FPS: ' + fps;
 
+    // Render Probabilities
+    renderProbabilityList(data.confidences);
+
+    // Deep Stats Rendering
+    if (data.stats) {
+      const s = data.stats;
+      
+      // Margin & Entropy badges
+      const marginEl = document.getElementById('marginBadge');
+      if (marginEl) marginEl.innerText = 'Margin: +' + (s.top_margin * 100).toFixed(1) + '%';
+      const entEl = document.getElementById('entropyBadge');
+      if (entEl) entEl.innerText = 'H(P): ' + s.entropy_bits.toFixed(2) + ' bits';
+
+      // Decision Theory Tab
+      document.getElementById('infoEntropy').innerText = s.entropy_bits.toFixed(3);
+      document.getElementById('infoEntropyMax').innerText = 'Max: ' + s.max_entropy_bits.toFixed(2) + ' bits';
+      document.getElementById('infoUncertainty').innerText = s.uncertainty_pct.toFixed(1) + '%';
+      document.getElementById('infoPerplexity').innerText = s.perplexity.toFixed(2);
+      document.getElementById('infoGini').innerText = s.gini_impurity.toFixed(3);
+
+      // Logits Table
+      renderLogitsTable(data.confidences, s.raw_logits);
+
+      // Geometry & 28x28 Preview
+      renderGeometry(s.geometry);
+
+      // Performance Profiler Tab
+      renderPerformance(s.timing, s.runtime, avgLat);
+
+      // 13-Channel Manifold
+      renderManifold(s.manifold);
+
+      // Layer Activations
+      renderLayers(s.layers);
+
+      // Header System Info
+      if (s.runtime) {
+        const hdrCores = document.getElementById('hdrCores');
+        if (hdrCores) hdrCores.innerText = '⚡ CPU Cores: ' + s.runtime.cpu_cores;
+        const hdrMem = document.getElementById('hdrMem');
+        if (hdrMem) hdrMem.innerText = 'RAM: ' + s.runtime.heap_alloc_mb.toFixed(1) + ' MB';
+      }
+    }
+  }
+
+  function renderProbabilityList(confidences) {
     const list = document.getElementById('classList');
     list.innerHTML = '';
-    const sorted = [...data.confidences].sort((a, b) => b.confidence - a.confidence);
+    const sorted = [...confidences].sort((a, b) => b.confidence - a.confidence);
 
     sorted.forEach((item, idx) => {
       const pct = (item.confidence * 100).toFixed(1);
@@ -4814,7 +4803,9 @@ const webAppHTML = `<!DOCTYPE html>
       row.className = 'class-row' + (isTop ? ' top' : '');
       row.innerHTML =
         '<div class="class-info">' +
-          '<span style="' + (isTop ? 'color: var(--accent-blue); font-weight:700;' : '') + '">' + item.class_name + '</span>' +
+          '<span style="' + (isTop ? 'color: var(--accent-blue); font-weight:700;' : '') + '">' +
+            (idx < 3 ? '<b style="color:var(--accent-cyan);">#' + (idx+1) + '</b> ' : '') + item.class_name +
+          '</span>' +
           '<span style="' + (isTop ? 'color: var(--accent-emerald); font-weight:700;' : 'color: var(--text-secondary);') + '">' + pct + '%</span>' +
         '</div>' +
         '<div class="progress-bg">' +
@@ -4824,22 +4815,242 @@ const webAppHTML = `<!DOCTYPE html>
     });
   }
 
+  function renderLogitsTable(confidences, logits) {
+    const tbody = document.getElementById('logitsTableBody');
+    if (!tbody || !logits) return;
+    tbody.innerHTML = '';
+    const sortedIndices = confidences.map((c, i) => i).sort((a, b) => confidences[b].confidence - confidences[a].confidence);
+
+    sortedIndices.slice(0, 8).forEach(idx => {
+      const c = confidences[idx];
+      const z = logits[idx];
+      const ez = Math.exp(z);
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td style="color: var(--accent-blue); font-weight: 600;">' + c.class_name + '</td>' +
+        '<td>' + (z >= 0 ? '+' : '') + z.toFixed(4) + '</td>' +
+        '<td>' + (ez > 1000 ? ez.toExponential(2) : ez.toFixed(3)) + '</td>' +
+        '<td style="color: var(--accent-emerald); font-weight: 600;">' + (c.confidence * 100).toFixed(2) + '%</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderGeometry(geom) {
+    if (!geom) return;
+    document.getElementById('geomBBoxDim').innerText = geom.bbox_width + ' × ' + geom.bbox_height;
+    document.getElementById('geomAspect').innerText = geom.aspect_ratio.toFixed(2);
+    document.getElementById('geomFgCount').innerText = geom.foreground_pixels + ' px';
+    document.getElementById('geomDensity').innerText = geom.stroke_density_pct.toFixed(1) + '%';
+    document.getElementById('geomCentroid').innerText = '(' + geom.centroid_x.toFixed(1) + ', ' + geom.centroid_y.toFixed(1) + ')';
+    document.getElementById('geomCoverage').innerText = geom.canvas_coverage_pct.toFixed(1) + '%';
+
+    // Render 28x28 Resampled Preview
+    if (prev28Ctx && geom.resampled_28x28) {
+      const imgData = prev28Ctx.createImageData(28, 28);
+      for (let i = 0; i < 784; i++) {
+        const v = geom.resampled_28x28[i];
+        imgData.data[i * 4 + 0] = v;
+        imgData.data[i * 4 + 1] = v;
+        imgData.data[i * 4 + 2] = v;
+        imgData.data[i * 4 + 3] = 255;
+      }
+      prev28Ctx.putImageData(imgData, 0, 0);
+    }
+  }
+
+  function renderPerformance(timing, runtime, avgLat) {
+    if (!timing) return;
+    const tot = timing.total_us || 1;
+    document.getElementById('tPreUs').innerText = timing.preprocess_us.toFixed(1) + ' µs';
+    document.getElementById('tPreMs').innerText = (timing.preprocess_us / 1000).toFixed(3) + ' ms';
+    document.getElementById('tPrePct').innerText = ((timing.preprocess_us / tot) * 100).toFixed(1) + '%';
+
+    document.getElementById('tManUs').innerText = timing.manifold_us.toFixed(1) + ' µs';
+    document.getElementById('tManMs').innerText = (timing.manifold_us / 1000).toFixed(3) + ' ms';
+    document.getElementById('tManPct').innerText = ((timing.manifold_us / tot) * 100).toFixed(1) + '%';
+
+    document.getElementById('tConvUs').innerText = timing.conv_us.toFixed(1) + ' µs';
+    document.getElementById('tConvMs').innerText = (timing.conv_us / 1000).toFixed(3) + ' ms';
+    document.getElementById('tConvPct').innerText = ((timing.conv_us / tot) * 100).toFixed(1) + '%';
+
+    document.getElementById('tDenseUs').innerText = timing.dense_us.toFixed(1) + ' µs';
+    document.getElementById('tDenseMs').innerText = (timing.dense_us / 1000).toFixed(3) + ' ms';
+    document.getElementById('tDensePct').innerText = ((timing.dense_us / tot) * 100).toFixed(1) + '%';
+
+    document.getElementById('tSoftUs').innerText = timing.softmax_us.toFixed(1) + ' µs';
+    document.getElementById('tSoftMs').innerText = (timing.softmax_us / 1000).toFixed(3) + ' ms';
+    document.getElementById('tSoftPct').innerText = ((timing.softmax_us / tot) * 100).toFixed(1) + '%';
+
+    document.getElementById('tTotUs').innerText = timing.total_us.toFixed(1) + ' µs';
+    document.getElementById('tTotMs').innerText = (timing.total_us / 1000).toFixed(3) + ' ms';
+
+    // Update stacked bar segments
+    const segments = document.querySelectorAll('.stage-segment');
+    if (segments.length >= 5) {
+      segments[0].style.width = ((timing.preprocess_us / tot) * 100) + '%';
+      segments[1].style.width = ((timing.manifold_us / tot) * 100) + '%';
+      segments[2].style.width = ((timing.conv_us / tot) * 100) + '%';
+      segments[3].style.width = ((timing.dense_us / tot) * 100) + '%';
+      segments[4].style.width = ((timing.softmax_us / tot) * 100) + '%';
+    }
+
+    document.getElementById('perfThroughput').innerText = timing.throughput_fps.toFixed(0);
+    document.getElementById('perfAvgLatency').innerText = avgLat.toFixed(2) + ' ms';
+
+    if (runtime) {
+      document.getElementById('perfHeapAlloc').innerText = runtime.heap_alloc_mb.toFixed(1) + ' MB';
+      document.getElementById('perfNumGC').innerText = runtime.num_gc;
+    }
+  }
+
+  function renderManifold(manifold) {
+    if (!manifold || !manifold.channel_grids) return;
+    const grid = document.getElementById('manifoldGrid');
+    grid.innerHTML = '';
+    const cmap = cmapSelect ? cmapSelect.value : 'neon';
+
+    manifold.channel_names.forEach((name, idx) => {
+      const card = document.createElement('div');
+      card.className = 'manifold-card';
+      const cCanvas = document.createElement('canvas');
+      cCanvas.width = 28;
+      cCanvas.height = 28;
+      const cCtx = cCanvas.getContext('2d');
+      const imgData = cCtx.createImageData(28, 28);
+      const rawGrid = manifold.channel_grids[idx];
+
+      for (let i = 0; i < 784; i++) {
+        const val = rawGrid[i];
+        const [r, g, b] = getColormapColor(val, cmap);
+        imgData.data[i * 4 + 0] = r;
+        imgData.data[i * 4 + 1] = g;
+        imgData.data[i * 4 + 2] = b;
+        imgData.data[i * 4 + 3] = 255;
+      }
+      cCtx.putImageData(imgData, 0, 0);
+
+      const energy = (manifold.channel_energy[idx] * 100).toFixed(1);
+      const peak = manifold.channel_max[idx].toFixed(2);
+      const sparsity = manifold.channel_sparsity[idx].toFixed(0);
+
+      card.appendChild(cCanvas);
+      card.innerHTML += 
+        '<div class="manifold-title" title="' + name + '">' + name + '</div>' +
+        '<div class="manifold-sub">E: ' + energy + '% | Pk: ' + peak + '</div>';
+
+      card.addEventListener('click', () => {
+        openChannelModal(name, rawGrid, energy, peak, sparsity, cmap);
+      });
+
+      grid.appendChild(card);
+    });
+  }
+
+  function openChannelModal(name, rawGrid, energy, peak, sparsity, cmap) {
+    const modal = document.getElementById('channelModal');
+    document.getElementById('modalChannelTitle').innerText = name;
+    document.getElementById('modalEnergy').innerText = energy + '%';
+    document.getElementById('modalPeak').innerText = peak;
+    document.getElementById('modalSparsity').innerText = sparsity + '%';
+
+    const mCanvas = document.getElementById('modalCanvas');
+    const mCtx = mCanvas.getContext('2d');
+    const imgData = mCtx.createImageData(28, 28);
+    for (let i = 0; i < 784; i++) {
+      const [r, g, b] = getColormapColor(rawGrid[i], cmap);
+      imgData.data[i * 4 + 0] = r;
+      imgData.data[i * 4 + 1] = g;
+      imgData.data[i * 4 + 2] = b;
+      imgData.data[i * 4 + 3] = 255;
+    }
+    mCtx.putImageData(imgData, 0, 0);
+    modal.classList.add('active');
+  }
+
+  document.getElementById('modalCloseBtn').addEventListener('click', () => {
+    document.getElementById('channelModal').classList.remove('active');
+  });
+
+  function renderLayers(layers) {
+    if (!layers) return;
+    document.getElementById('actConv1Mean').innerText = layers.conv1_mean_act.toFixed(3);
+    document.getElementById('actConv1Sparsity').innerText = 'Sparsity: ' + layers.conv1_sparsity_pct.toFixed(1) + '%';
+    document.getElementById('actConv2Mean').innerText = layers.conv2_mean_act.toFixed(3);
+    document.getElementById('actConv2Sparsity').innerText = 'Sparsity: ' + layers.conv2_sparsity_pct.toFixed(1) + '%';
+    document.getElementById('actPoolNorm').innerText = layers.pool512_l2_norm.toFixed(2);
+    document.getElementById('fc1ActiveLabel').innerText = 'Active: ' + layers.fc1_active_neurons + ' / 128 (' + (100 - layers.fc1_sparsity_pct).toFixed(1) + '%)';
+
+    // Render FC1 Vector Bars
+    const chart = document.getElementById('fc1VectorChart');
+    if (chart && layers.fc1_hidden_vector) {
+      chart.innerHTML = '';
+      const maxVal = Math.max(0.1, ...layers.fc1_hidden_vector);
+      layers.fc1_hidden_vector.forEach(v => {
+        const bar = document.createElement('div');
+        bar.className = 'vector-bar';
+        const hPct = Math.min(100, Math.max(4, (v / maxVal) * 100));
+        bar.style.height = hPct + '%';
+        if (v === 0) {
+          bar.style.background = '#334155';
+          bar.style.height = '3px';
+        } else {
+          bar.style.background = 'linear-gradient(to top, var(--accent-blue), var(--accent-cyan))';
+        }
+        chart.appendChild(bar);
+      });
+    }
+  }
+
+  // Export JSON Diagnostics Telemetry
+  document.getElementById('btnExportJson').addEventListener('click', () => {
+    if (!lastTelemetry) {
+      alert('Draw something first to generate diagnostics telemetry!');
+      return;
+    }
+    const jsonStr = JSON.stringify(lastTelemetry, null, 2);
+    navigator.clipboard.writeText(jsonStr).then(() => {
+      alert('Telemetry JSON copied to clipboard!');
+    }).catch(() => {
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'diagonnet_telemetry.json';
+      a.click();
+    });
+  });
+
   // Initial metadata query
   fetch('/api/info').then(r => r.json()).then(info => {
-    if (info && info.classes) {
-      const list = document.getElementById('classList');
-      list.innerHTML = '';
-      info.classes.forEach(c => {
-        const row = document.createElement('div');
-        row.className = 'class-row';
-        row.innerHTML =
-          '<div class="class-info">' +
-            '<span>' + c + '</span>' +
-            '<span style="color: var(--text-secondary);">0.0%</span>' +
-          '</div>' +
-          '<div class="progress-bg"><div class="progress-fill" style="width: 0%"></div></div>';
-        list.appendChild(row);
-      });
+    if (info) {
+      if (info.classes) {
+        const list = document.getElementById('classList');
+        list.innerHTML = '';
+        info.classes.forEach((c, idx) => {
+          const row = document.createElement('div');
+          row.className = 'class-row';
+          row.innerHTML =
+            '<div class="class-info">' +
+              '<span>' + c + '</span>' +
+              '<span style="color: var(--text-secondary);">0.0%</span>' +
+            '</div>' +
+            '<div class="progress-bg"><div class="progress-fill" style="width: 0%"></div></div>';
+          list.appendChild(row);
+        });
+      }
+      if (info.parameters) {
+        document.getElementById('archTotalParams').innerText = info.parameters.toLocaleString();
+        document.getElementById('archWeightsSize').innerText = (info.parameters * 4 / 1024).toFixed(1) + ' KB';
+      }
+      if (info.num_classes) {
+        document.getElementById('archOutputClasses').innerText = info.num_classes + ' Classes';
+        const fcParams = (128 * info.num_classes + info.num_classes).toLocaleString();
+        document.getElementById('archFCParams').innerText = fcParams + ' (' + (128 * info.num_classes) + ' W + ' + info.num_classes + ' B)';
+      }
+      if (info.cpu_cores) {
+        const hdrCores = document.getElementById('hdrCores');
+        if (hdrCores) hdrCores.innerText = '⚡ CPU Cores: ' + info.cpu_cores;
+      }
     }
   }).catch(() => {});
 </script>
@@ -4858,37 +5069,199 @@ type ClassConfidence struct {
 	Confidence float32 `json:"confidence"`
 }
 
-// PredictResponse contains the model classification results, confidence array, and inference latency.
-type PredictResponse struct {
-	PredictedClass string            `json:"predicted_class"`
-	ClassIndex     int               `json:"class_index"`
-	Confidence     float32           `json:"confidence"`
-	Confidences    []ClassConfidence `json:"confidences"`
-	LatencyMs      float64           `json:"latency_ms"`
-	IsBlank        bool              `json:"is_blank"`
+// TimingBreakdown contains microsecond profiling for each pipeline stage.
+type TimingBreakdown struct {
+	PreprocessUs  float64 `json:"preprocess_us"`
+	ManifoldUs    float64 `json:"manifold_us"`
+	ConvUs        float64 `json:"conv_us"`
+	DenseUs       float64 `json:"dense_us"`
+	SoftmaxUs     float64 `json:"softmax_us"`
+	TotalUs       float64 `json:"total_us"`
+	ThroughputFps float64 `json:"throughput_fps"`
 }
 
-// PreprocessWebImage takes an arbitrary decoded image, locates the tight bounding box, centers it with scale-invariant padding,
-// stretches stroke contrast, and resamples to an InputSize x InputSize Tensor normalized to [0.0, 1.0].
-//
-// This must stay byte-for-byte identical to the training pipeline in runTrain; any divergence
-// (resolution, threshold, ordering of the steps) shifts the input distribution away from the one
-// the weights were fitted on and shows up as poor live predictions despite a good val accuracy.
-func PreprocessWebImage(src image.Image) (*Tensor, bool) {
+// GeometryStats contains spatial, bounding box, and morphological measurements of the input stroke.
+type GeometryStats struct {
+	BBoxMinX         int     `json:"bbox_min_x"`
+	BBoxMinY         int     `json:"bbox_min_y"`
+	BBoxMaxX         int     `json:"bbox_max_x"`
+	BBoxMaxY         int     `json:"bbox_max_y"`
+	BBoxWidth        int     `json:"bbox_width"`
+	BBoxHeight       int     `json:"bbox_height"`
+	AspectRatio      float64 `json:"aspect_ratio"`
+	CanvasCoveragePct float64 `json:"canvas_coverage_pct"`
+	ForegroundPixels int     `json:"foreground_pixels"`
+	StrokeDensityPct float64 `json:"stroke_density_pct"`
+	CentroidX        float64 `json:"centroid_x"`
+	CentroidY        float64 `json:"centroid_y"`
+	Resampled28x28   []int   `json:"resampled_28x28"`
+}
+
+// ManifoldStats contains 13-channel spatial difference manifold metrics and visual heatmaps.
+type ManifoldStats struct {
+	ChannelNames    []string  `json:"channel_names"`
+	ChannelEnergy   []float64 `json:"channel_energy"`
+	ChannelMax      []float64 `json:"channel_max"`
+	ChannelSparsity []float64 `json:"channel_sparsity"`
+	ChannelGrids    [][]uint8 `json:"channel_grids"`
+}
+
+// LayerActivationStats contains intermediate layer representations and neuron sparsity.
+type LayerActivationStats struct {
+	Conv1MeanAct     float64   `json:"conv1_mean_act"`
+	Conv1SparsityPct float64   `json:"conv1_sparsity_pct"`
+	Conv2MeanAct     float64   `json:"conv2_mean_act"`
+	Conv2SparsityPct float64   `json:"conv2_sparsity_pct"`
+	Pool512L2Norm    float64   `json:"pool512_l2_norm"`
+	FC1HiddenVector  []float32 `json:"fc1_hidden_vector"`
+	FC1ActiveNeurons int       `json:"fc1_active_neurons"`
+	FC1SparsityPct   float64   `json:"fc1_sparsity_pct"`
+}
+
+// RuntimeStats contains host Go runtime and hardware execution diagnostics.
+type RuntimeStats struct {
+	CPUCores        int     `json:"cpu_cores"`
+	Goroutines      int     `json:"goroutines"`
+	HeapAllocMB     float64 `json:"heap_alloc_mb"`
+	SysMemMB        float64 `json:"sys_mem_mb"`
+	NumGC           uint32  `json:"num_gc"`
+	ModelParameters int     `json:"model_parameters"`
+}
+
+// InferenceDeepStats encapsulates comprehensive neural metrics, information theory, profiler, and representations.
+type InferenceDeepStats struct {
+	EntropyBits    float64              `json:"entropy_bits"`
+	MaxEntropyBits float64              `json:"max_entropy_bits"`
+	UncertaintyPct float64              `json:"uncertainty_pct"`
+	Perplexity     float64              `json:"perplexity"`
+	GiniImpurity   float64              `json:"gini_impurity"`
+	TopMargin      float32              `json:"top_margin"`
+	Top2Class      string               `json:"top2_class"`
+	Top2Confidence float32              `json:"top2_confidence"`
+	Top3Class      string               `json:"top3_class"`
+	Top3Confidence float32              `json:"top3_confidence"`
+	RawLogits      []float32            `json:"raw_logits"`
+	Timing         TimingBreakdown      `json:"timing"`
+	Geometry       GeometryStats        `json:"geometry"`
+	Manifold       ManifoldStats        `json:"manifold"`
+	Layers         LayerActivationStats `json:"layers"`
+	Runtime        RuntimeStats         `json:"runtime"`
+}
+
+// PredictResponse contains the model classification results, confidence array, inference latency, and deep stats.
+type PredictResponse struct {
+	PredictedClass string              `json:"predicted_class"`
+	ClassIndex     int                 `json:"class_index"`
+	Confidence     float32             `json:"confidence"`
+	Confidences    []ClassConfidence   `json:"confidences"`
+	LatencyMs      float64             `json:"latency_ms"`
+	IsBlank        bool                `json:"is_blank"`
+	Stats          *InferenceDeepStats `json:"stats,omitempty"`
+}
+
+// WebImagePreprocessingStats contains bounding box, morphology, and resampled 28x28 normalized values.
+type WebImagePreprocessingStats struct {
+	BBoxMinX        int
+	BBoxMinY        int
+	BBoxMaxX        int
+	BBoxMaxY        int
+	BBoxWidth       int
+	BBoxHeight      int
+	AspectRatio     float64
+	CanvasCoverage  float64
+	ForegroundCount int
+	StrokeDensity   float64
+	CentroidX       float64
+	CentroidY       float64
+	Resampled28x28  []int
+}
+
+// PreprocessWebImageDetailed extracts the centered 28x28 Tensor as well as morphological spatial diagnostics.
+func PreprocessWebImageDetailed(src image.Image) (*Tensor, bool, WebImagePreprocessingStats) {
 	bounds := src.Bounds()
 	gray := image.NewGray(bounds)
 	draw.Draw(gray, bounds, src, bounds.Min, draw.Src)
 
+	var sumX, sumY, totalLum float64
+	var fgCount int
+	w, h := bounds.Dx(), bounds.Dy()
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			lum := float64(gray.GrayAt(x, y).Y)
+			if lum > 10 {
+				fgCount++
+				sumX += float64(x) * lum
+				sumY += float64(y) * lum
+				totalLum += lum
+			}
+		}
+	}
+
 	bbox := FindBoundingBox(gray, 10)
 	if bbox == nil {
-		return NewTensor(1, InputSize, InputSize), true
+		return NewTensor(1, InputSize, InputSize), true, WebImagePreprocessingStats{}
 	}
 
 	centered := PadAndCenter(gray, bbox)
 	stretched := ContrastStretch(centered)
 	resized := ResizeBilinear(stretched, InputSize, InputSize)
 	tensor := GrayImageToTensor(resized)
-	return tensor, false
+
+	resampled := make([]int, InputSize*InputSize)
+	for i := range tensor.Data {
+		v := int(math.Round(float64(tensor.Data[i] * 255.0)))
+		if v < 0 {
+			v = 0
+		} else if v > 255 {
+			v = 255
+		}
+		resampled[i] = v
+	}
+
+	bboxW := bbox.MaxX - bbox.MinX + 1
+	bboxH := bbox.MaxY - bbox.MinY + 1
+	aspectRatio := 1.0
+	if bboxH > 0 {
+		aspectRatio = float64(bboxW) / float64(bboxH)
+	}
+	coverage := 0.0
+	if w > 0 && h > 0 {
+		coverage = (float64(bboxW*bboxH) / float64(w*h)) * 100.0
+	}
+	density := 0.0
+	if bboxW*bboxH > 0 {
+		density = (float64(fgCount) / float64(bboxW*bboxH)) * 100.0
+	}
+	var cx, cy float64
+	if totalLum > 0 {
+		cx = sumX / totalLum
+		cy = sumY / totalLum
+	}
+
+	stats := WebImagePreprocessingStats{
+		BBoxMinX:        bbox.MinX,
+		BBoxMinY:        bbox.MinY,
+		BBoxMaxX:        bbox.MaxX,
+		BBoxMaxY:        bbox.MaxY,
+		BBoxWidth:       bboxW,
+		BBoxHeight:      bboxH,
+		AspectRatio:     aspectRatio,
+		CanvasCoverage:  coverage,
+		ForegroundCount: fgCount,
+		StrokeDensity:   density,
+		CentroidX:       cx,
+		CentroidY:       cy,
+		Resampled28x28:  resampled,
+	}
+
+	return tensor, false, stats
+}
+
+// PreprocessWebImage takes an arbitrary decoded image, locates the tight bounding box, centers it with scale-invariant padding,
+// stretches stroke contrast, and resamples to an InputSize x InputSize Tensor normalized to [0.0, 1.0].
+func PreprocessWebImage(src image.Image) (*Tensor, bool) {
+	tensor, isBlank, _ := PreprocessWebImageDetailed(src)
+	return tensor, isBlank
 }
 
 // InferenceServer hosts the HTTP web canvas UI and real-time prediction API.
@@ -4933,12 +5306,35 @@ func (s *InferenceServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *InferenceServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	totalParams := CountModelParameters(s.Model.Parameters())
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"classes":     s.ClassNames,
-		"num_classes": s.Model.NumClasses,
-		"parameters":  CountModelParameters(s.Model.Parameters()),
-		"cpu_cores":   runtime.NumCPU(),
+		"classes":      s.ClassNames,
+		"num_classes":  s.Model.NumClasses,
+		"parameters":   totalParams,
+		"cpu_cores":    runtime.NumCPU(),
+		"goroutines":   runtime.NumGoroutine(),
+		"heap_alloc_mb": float64(mem.HeapAlloc) / (1024.0 * 1024.0),
+		"sys_mem_mb":   float64(mem.Sys) / (1024.0 * 1024.0),
 	})
+}
+
+var manifoldChannelDisplayNames = []string{
+	"Ch 0: Base Grayscale (I₀)",
+	"Ch 1: Diag ↖ (-1,-1)",
+	"Ch 2: Diag ↗ (+1,-1)",
+	"Ch 3: Diag ↙ (-1,+1)",
+	"Ch 4: Diag ↘ (+1,+1)",
+	"Ch 5: Knight 1 (-2,-1)",
+	"Ch 6: Knight 2 (-2,+1)",
+	"Ch 7: Knight 3 (-1,-2)",
+	"Ch 8: Knight 4 (-1,+2)",
+	"Ch 9: Knight 5 (+1,-2)",
+	"Ch 10: Knight 6 (+1,+2)",
+	"Ch 11: Knight 7 (+2,-1)",
+	"Ch 12: Knight 8 (+2,+1)",
 }
 
 func (s *InferenceServer) handlePredict(w http.ResponseWriter, r *http.Request) {
@@ -4970,13 +5366,19 @@ func (s *InferenceServer) handlePredict(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	start := time.Now()
+	tStart := time.Now()
 
-	tensor, isBlank := PreprocessWebImage(img)
+	// 1. Preprocessing stage
+	tensor, isBlank, pStats := PreprocessWebImageDetailed(img)
+	tPreprocess := float64(time.Since(tStart).Microseconds())
 
 	var predClass int
 	var maxProb float32
 	confidences := make([]ClassConfidence, s.Model.NumClasses)
+
+	var tManifold, tConv, tDense, tSoftmax float64
+	var rawLogits []float32
+	var deepStats *InferenceDeepStats
 
 	if isBlank {
 		for i := 0; i < s.Model.NumClasses; i++ {
@@ -4988,9 +5390,116 @@ func (s *InferenceServer) handlePredict(w http.ResponseWriter, r *http.Request) 
 		}
 	} else {
 		s.Model.SetTraining(false)
-		logits := s.Model.Forward(tensor)
+
+		// 2. 13-Channel Manifold stage
+		t1 := time.Now()
+		manifold := ComputeManifoldTensor(tensor)
+		tManifold = float64(time.Since(t1).Microseconds())
+
+		// Extract 13-Channel Manifold stats and heatmap grids
+		hw := InputSize * InputSize
+		channelGrids := make([][]uint8, 13)
+		channelEnergy := make([]float64, 13)
+		channelMax := make([]float64, 13)
+		channelSparsity := make([]float64, 13)
+
+		for c := 0; c < 13; c++ {
+			grid := make([]uint8, hw)
+			var sum float64
+			var maxV float32
+			var zeroCount int
+			offset := c * hw
+			for i := 0; i < hw; i++ {
+				val := manifold.Data[offset+i]
+				if val > maxV {
+					maxV = val
+				}
+				if val < 0.01 {
+					zeroCount++
+				}
+				sum += float64(val)
+				v := int(val * 255.0)
+				if v < 0 {
+					v = 0
+				} else if v > 255 {
+					v = 255
+				}
+				grid[i] = uint8(v)
+			}
+			channelGrids[c] = grid
+			channelEnergy[c] = sum / float64(hw)
+			channelMax[c] = float64(maxV)
+			channelSparsity[c] = (float64(zeroCount) / float64(hw)) * 100.0
+		}
+
+		// 3. Convolutional stages
+		t2 := time.Now()
+		c1 := s.Model.Conv1.Forward(manifold)
+		a1 := s.Model.ReLU1.ForwardTensor(c1)
+		p1 := s.Model.Pool1.Forward(a1)
+		c2 := s.Model.Conv2.Forward(p1)
+		a2 := s.Model.ReLU2.ForwardTensor(c2)
+		p2 := s.Model.Pool2.Forward(a2)
+		tConv = float64(time.Since(t2).Microseconds())
+
+		// Conv Activation Metrics
+		var c1Sum float64
+		var c1Zero int
+		for _, v := range a1.Data {
+			if v == 0 {
+				c1Zero++
+			}
+			c1Sum += float64(v)
+		}
+		conv1Mean := c1Sum / float64(len(a1.Data))
+		conv1Sparsity := (float64(c1Zero) / float64(len(a1.Data))) * 100.0
+
+		var c2Sum float64
+		var c2Zero int
+		for _, v := range a2.Data {
+			if v == 0 {
+				c2Zero++
+			}
+			c2Sum += float64(v)
+		}
+		conv2Mean := c2Sum / float64(len(a2.Data))
+		conv2Sparsity := (float64(c2Zero) / float64(len(a2.Data))) * 100.0
+
+		// 4. Dense & Pooling stages
+		t3 := time.Now()
+		pooled := s.Model.Pool.Forward(p2)
+		var poolSqSum float64
+		for _, v := range pooled.Data {
+			poolSqSum += float64(v * v)
+		}
+		pool512Norm := math.Sqrt(poolSqSum)
+
+		h := s.Model.FC1.Forward(pooled.Data)
+		hAct := s.Model.ReLU3.Forward(h)
+		s.Model.Dropout.Training = false
+		hDrop := s.Model.Dropout.Forward(hAct)
+		logits := s.Model.FC.Forward(hDrop)
+		tDense = float64(time.Since(t3).Microseconds())
+
+		rawLogits = make([]float32, len(logits))
+		copy(rawLogits, logits)
+
+		fc1Vector := make([]float32, len(hAct))
+		copy(fc1Vector, hAct)
+		var fc1Active int
+		for _, v := range hAct {
+			if v > 0 {
+				fc1Active++
+			}
+		}
+		fc1Sparsity := (float64(len(hAct)-fc1Active) / float64(len(hAct))) * 100.0
+
+		// 5. Softmax & Decision analytics
+		t4 := time.Now()
 		probs := Softmax(logits)
 
+		var entropy float64
+		var sumSq float64
 		for i := 0; i < s.Model.NumClasses; i++ {
 			p := probs[i]
 			if p > maxProb {
@@ -5002,10 +5511,122 @@ func (s *InferenceServer) handlePredict(w http.ResponseWriter, r *http.Request) 
 				ClassIndex: i,
 				Confidence: p,
 			}
+			if p > 1e-12 {
+				entropy -= float64(p) * math.Log2(float64(p))
+			}
+			sumSq += float64(p * p)
+		}
+
+		maxEntropy := math.Log2(float64(s.Model.NumClasses))
+		if maxEntropy <= 0 {
+			maxEntropy = 1.0
+		}
+		uncertaintyPct := (entropy / maxEntropy) * 100.0
+		perplexity := math.Pow(2.0, entropy)
+		gini := 1.0 - sumSq
+
+		type classScore struct {
+			name string
+			prob float32
+		}
+		scores := make([]classScore, s.Model.NumClasses)
+		for i := 0; i < s.Model.NumClasses; i++ {
+			scores[i] = classScore{name: s.ClassNames[i], prob: probs[i]}
+		}
+		sort.Slice(scores, func(i, j int) bool {
+			return scores[i].prob > scores[j].prob
+		})
+
+		topMargin := maxProb
+		top2Class := ""
+		top2Prob := float32(0.0)
+		top3Class := ""
+		top3Prob := float32(0.0)
+		if len(scores) > 1 {
+			top2Class = scores[1].name
+			top2Prob = scores[1].prob
+			topMargin = maxProb - top2Prob
+		}
+		if len(scores) > 2 {
+			top3Class = scores[2].name
+			top3Prob = scores[2].prob
+		}
+
+		tSoftmax = float64(time.Since(t4).Microseconds())
+		totalUs := float64(time.Since(tStart).Microseconds())
+		fps := 0.0
+		if totalUs > 0 {
+			fps = 1000000.0 / totalUs
+		}
+
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+
+		deepStats = &InferenceDeepStats{
+			EntropyBits:    entropy,
+			MaxEntropyBits: maxEntropy,
+			UncertaintyPct: uncertaintyPct,
+			Perplexity:     perplexity,
+			GiniImpurity:   gini,
+			TopMargin:      topMargin,
+			Top2Class:      top2Class,
+			Top2Confidence: top2Prob,
+			Top3Class:      top3Class,
+			Top3Confidence: top3Prob,
+			RawLogits:      rawLogits,
+			Timing: TimingBreakdown{
+				PreprocessUs:  tPreprocess,
+				ManifoldUs:    tManifold,
+				ConvUs:        tConv,
+				DenseUs:       tDense,
+				SoftmaxUs:     tSoftmax,
+				TotalUs:       totalUs,
+				ThroughputFps: fps,
+			},
+			Geometry: GeometryStats{
+				BBoxMinX:          pStats.BBoxMinX,
+				BBoxMinY:          pStats.BBoxMinY,
+				BBoxMaxX:          pStats.BBoxMaxX,
+				BBoxMaxY:          pStats.BBoxMaxY,
+				BBoxWidth:         pStats.BBoxWidth,
+				BBoxHeight:        pStats.BBoxHeight,
+				AspectRatio:       pStats.AspectRatio,
+				CanvasCoveragePct: pStats.CanvasCoverage,
+				ForegroundPixels:  pStats.ForegroundCount,
+				StrokeDensityPct:  pStats.StrokeDensity,
+				CentroidX:         pStats.CentroidX,
+				CentroidY:         pStats.CentroidY,
+				Resampled28x28:    pStats.Resampled28x28,
+			},
+			Manifold: ManifoldStats{
+				ChannelNames:    manifoldChannelDisplayNames,
+				ChannelEnergy:   channelEnergy,
+				ChannelMax:      channelMax,
+				ChannelSparsity: channelSparsity,
+				ChannelGrids:    channelGrids,
+			},
+			Layers: LayerActivationStats{
+				Conv1MeanAct:     conv1Mean,
+				Conv1SparsityPct: conv1Sparsity,
+				Conv2MeanAct:     conv2Mean,
+				Conv2SparsityPct: conv2Sparsity,
+				Pool512L2Norm:    pool512Norm,
+				FC1HiddenVector:  fc1Vector,
+				FC1ActiveNeurons: fc1Active,
+				FC1SparsityPct:   fc1Sparsity,
+			},
+			Runtime: RuntimeStats{
+				CPUCores:        runtime.NumCPU(),
+				Goroutines:      runtime.NumGoroutine(),
+				HeapAllocMB:     float64(mem.HeapAlloc) / (1024.0 * 1024.0),
+				SysMemMB:        float64(mem.Sys) / (1024.0 * 1024.0),
+				NumGC:           mem.NumGC,
+				ModelParameters: CountModelParameters(s.Model.Parameters()),
+			},
 		}
 	}
 
-	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+	latencyMs := float64(time.Since(tStart).Microseconds()) / 1000.0
 
 	resp := PredictResponse{
 		PredictedClass: s.ClassNames[predClass],
@@ -5014,6 +5635,7 @@ func (s *InferenceServer) handlePredict(w http.ResponseWriter, r *http.Request) 
 		Confidences:    confidences,
 		LatencyMs:      latencyMs,
 		IsBlank:        isBlank,
+		Stats:          deepStats,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -5062,7 +5684,7 @@ func StartInferenceServer(model *DiagonNetModel, classNames []string, port int, 
 }
 
 // ============================================================================
-// 10. CLI ROUTING & EXECUTION HANDLERS
+// 9. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
 
 func printHelp() {
@@ -5075,10 +5697,9 @@ func printHelp() {
 	fmt.Println("  -train          Launch deep learning model training pipeline")
 	fmt.Println("  -serve          Start the interactive HTTP inference and dashboard server")
 	fmt.Println("  -audit          Run dataset validation, shape verification, and integrity audit")
-	fmt.Println("  -benchmark      Execute full benchmark suite against standard dataset manifolds")
 	fmt.Println()
 	fmt.Println("Positional Subcommands:")
-	fmt.Println("  train, serve, audit, benchmark, help")
+	fmt.Println("  train, serve, audit, help")
 	fmt.Println()
 	fmt.Println("Configuration Flags:")
 	fmt.Println("  -data string    Path to dataset samples directory (default \"data\")")
@@ -5093,7 +5714,6 @@ func printHelp() {
 	fmt.Println("  diagonnet -train -data data -epochs 10 -lr 0.001 -batch 32")
 	fmt.Println("  diagonnet -serve -model weights/diagonnet_model.bin -port 8081")
 	fmt.Println("  diagonnet -audit -data data")
-	fmt.Println("  diagonnet -benchmark")
 	fmt.Println()
 }
 
@@ -5376,16 +5996,6 @@ func runServer(modelPath string, port int) {
 	}
 }
 
-func runBenchmark(dataDir string) {
-	fmt.Println(">>> [Benchmark Mode] Initializing comparative architecture benchmark...")
-	_, err := RunArchitectureBenchmark(dataDir, 15, 32, 0.002, filepath.Join("assets", "comparison_results.csv"))
-	if err != nil {
-		fmt.Printf(">>> [Benchmark Error] %v\n", err)
-		return
-	}
-	fmt.Println(">>> Architecture benchmark completed successfully.")
-}
-
 func main() {
 	// 1. Configure multi-core parallel runtime settings
 	runtime.GOMAXPROCS(runtime.NumCPU())
@@ -5397,7 +6007,6 @@ func main() {
 	trainFlag := fs.Bool("train", false, "Launch deep learning model training pipeline")
 	serveFlag := fs.Bool("serve", false, "Start the interactive HTTP inference and dashboard server")
 	auditFlag := fs.Bool("audit", false, "Run dataset validation, shape verification, and integrity audit")
-	benchFlag := fs.Bool("benchmark", false, "Execute full benchmark suite against standard dataset manifolds")
 
 	dataDir := fs.String("data", "data", "Path to dataset directory")
 	modelPath := fs.String("model", "weights/diagonnet_model.bin", "Path to binary model weights")
@@ -5420,8 +6029,6 @@ func main() {
 			args = append([]string{"-serve"}, remaining...)
 		case "audit":
 			args = append([]string{"-audit"}, remaining...)
-		case "benchmark", "bench":
-			args = append([]string{"-benchmark"}, remaining...)
 		case "help":
 			printHelp()
 			return
@@ -5446,8 +6053,6 @@ func main() {
 		runTrain(*dataDir, *modelPath, *epochs, float32(*lr), *batchSize, *profileFlag)
 	case *serveFlag:
 		runServer(*modelPath, *port)
-	case *benchFlag:
-		runBenchmark(*dataDir)
 	default:
 		// Positional fallback check from flag.Args() if flags were mixed
 		if fs.NArg() > 0 {
@@ -5460,9 +6065,6 @@ func main() {
 				return
 			case "audit":
 				runAudit(*dataDir)
-				return
-			case "benchmark", "bench":
-				runBenchmark(*dataDir)
 				return
 			}
 		}

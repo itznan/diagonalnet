@@ -6,7 +6,7 @@ BINARY_NAME=diagonnet
 BIN_DIR=bin
 TARGET=$(BIN_DIR)/$(BINARY_NAME)
 
-.PHONY: all build test clean audit benchmark deps-check run serve train
+.PHONY: all build test clean audit deps-check run serve train
 
 all: test build
 
@@ -24,9 +24,6 @@ train: build
 
 serve: build
 	$(TARGET) -serve -port 8081 -model weights/diagonnet_model.bin
-
-benchmark: build
-	$(TARGET) -benchmark
 
 deps-check:
 	@echo "Checking module graph..."
