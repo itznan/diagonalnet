@@ -326,11 +326,6 @@ C:\diagonalnet\
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
-├── allinone.bat            # Self-elevating All-In-One master control suite
-├── train.bat               # Self-elevating Multi-Profile Training Hub (Fast/Normal/Hardcore/Manual)
-├── verify_deps.bat         # Dependency audit verification script
-├── push.bat                # Git push automation script
-├── pull.bat                # Git pull automation script
 ├── assets/                 # Visual assets, manifolds, comparison CSVs
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
 ├── data/                   # Dataset storage directory
@@ -340,8 +335,11 @@ C:\diagonalnet\
 │   ├── benchmark.bat       # Multi-architecture benchmark runner (DiagonNet vs CNN vs MLP)
 │   ├── build.bat           # One-click static binary builder & test runner
 │   ├── config.bat          # Interactive control panel & configuration dashboard
-│   ├── train.bat           # Data-parallel deep learning model training pipeline
-│   └── use.bat             # Real-time web canvas server & browser auto-launcher
+│   ├── pull.bat            # Git pull automation script
+│   ├── push.bat            # Git push automation script
+│   ├── train.bat           # Multi-profile training hub (Fast/Normal/Hardcore/Manual)
+│   ├── use.bat             # Real-time web canvas server & browser auto-launcher
+│   └── verify_deps.bat     # Zero-dependency audit verification script
 └── weights/                # Binary model weights storage (DIAGON01 format)
 ```
 
@@ -413,7 +411,7 @@ diagonnet benchmark -data data
 Run the dependency verification script to confirm zero external third-party dependencies:
 
 ```cmd
-verify_deps.bat
+scripts\verify_deps.bat
 ```
 
 Output:

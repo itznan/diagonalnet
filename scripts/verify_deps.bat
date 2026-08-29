@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0\.."
 echo ====================================================
 echo  DiagonalNet Zero-Dependency Verification
 echo ====================================================
@@ -10,3 +11,4 @@ echo [2] Checking external non-standard library dependencies:
 go list -f "{{range .Imports}}{{println .}}{{end}}" ./... | sort /unique
 echo.
 echo Module is 100%% pure Go standard library with zero third-party dependencies.
+pause

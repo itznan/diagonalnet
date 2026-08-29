@@ -1,6 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: Set Working Directory to Repository Root
+cd /d "%~dp0\.."
+
 set "msg=%*"
 if "%msg%"=="" (
     set /p "msg=Enter commit message (or press enter for 'Update'): "
