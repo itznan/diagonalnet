@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
-[![Tests](https://img.shields.io/badge/Tests-40%20Passing-success)](main_test.go)
+[![Tests](https://img.shields.io/badge/Tests-46%20Passing-success)](main_test.go)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](README.md)
 
 > **Pure Go Zero-Dependency Deep Learning Engine, 13-Channel Spatial Difference Manifold Calculus & High-Performance CPU Runtime.**
@@ -24,9 +24,10 @@ GitHub Repository: [https://github.com/itznan/diagonalnet](https://github.com/it
   - [5. Lock-Free Parallel Gradient Reduction](#5-lock-free-parallel-gradient-reduction)
   - [6. Binary Weight Serialization (`DIAGON01`)](#6-binary-weight-serialization-diagon01)
   - [7. Dataset Scanner, Grayscale Loading, Stratified Splitting & Health Auditor](#7-dataset-scanner-grayscale-loading-stratified-splitting--health-auditor)
-  - [8. 13-Channel Spatial Difference Manifold Calculus](#8-13-channel-spatial-difference-manifold-calculus)
-  - [9. Neural Network Layers & Analytical Jacobian Autograd](#9-neural-network-layers--analytical-jacobian-autograd)
-  - [10. Dual-Mode CLI Routing Subsystem](#10-dual-mode-cli-routing-subsystem)
+  - [8. Bounding Box, Contrast Stretching, Resampling & 15x Augmentation](#8-bounding-box-contrast-stretching-resampling--15x-augmentation)
+  - [9. 13-Channel Spatial Difference Manifold Calculus](#9-13-channel-spatial-difference-manifold-calculus)
+  - [10. Neural Network Layers & Analytical Jacobian Autograd](#10-neural-network-layers--analytical-jacobian-autograd)
+  - [11. Dual-Mode CLI Routing Subsystem](#11-dual-mode-cli-routing-subsystem)
 - [Unit Testing & Numerical Gradient Verification](#unit-testing--numerical-gradient-verification)
 - [Project Directory Structure](#project-directory-structure)
 - [Getting Started & CLI Usage](#getting-started--cli-usage)
@@ -60,13 +61,17 @@ DiagonNet does not rely on PyTorch, TensorFlow, OpenCV, NumPy, scikit-learn, or 
 | 2 | **Hardcoded Classes & Rigid Dataset Topologies**<br>Traditional codebases hardcode label arrays and class counts, failing when applied to novel datasets or varying category numbers. | **Dataset-Agnostic Filesystem Scanner & Dynamic Two-Way Mapping**<br>Automatically discovers classes from filesystem subdirectories (`data/*`), builds deterministic two-way $0 \dots K-1$ bi-directional mappings (`ClassToIdx`, `IdxToClass`), and configures the classification head dynamically to $K$ classes. |
 | 3 | **Dataset Class Imbalance & Skewed Validation Sets**<br>Standard random train/test splitting leads to severe class distribution disparities, unrepresentative validation sets, and skewed metrics. | **Stratified Train / Validation Splitter**<br>Groups items by class label and extracts $\lfloor N_c \cdot \text{testRatio} \rfloor$ samples per class, guaranteeing perfectly balanced representation across splits with deterministic pseudo-random shuffling. |
 | 4 | **Corrupt, Blank, and Tiny Drawing Artifacts**<br>Dataset anomalies (corrupt files, 100% blank scans, tiny 5-pixel outlier marks) silently pollute training gradients and degrade classification performance. | **Automated Dataset Health & Quality Auditor (`-audit`)**<br>Computes foreground stroke statistics, detects corrupt/blank/tiny outliers, evaluates average bounding boxes, aspect ratios, and stroke densities, and prints formatted diagnostic tables. |
-| 5 | **Spatial & Directional Representation Bottleneck**<br>Standard 1-channel or 3-channel convolutional architectures struggle to capture non-local diagonal textures and discrete spatial derivatives without deep networks. | **13-Channel Spatial Difference Manifold Calculus**<br>Precomputes an analytical 13-channel manifold comprising base grayscale intensity ($Ch_0$), 4 immediate diagonal differential operators ($Ch_{1-4}$), and all 8 chess knight-move differential operators ($Ch_{5-12}$) in parallel across CPU rows. |
-| 6 | **Softmax Floating-Point Overflow & NaN Hazards**<br>Computing $\exp(z_i)$ directly causes IEEE-754 single-precision overflow ($+\infty$) and `NaN` values whenever logits exceed $\approx 88.7$. | **Max-Logit Subtracted Stable Exponentiation**<br>Subtracts the maximum logit $m = \max_j z_j$ prior to exponentiation ($e_i = \exp(z_i - m)$), guaranteeing mathematical invariance, bounded exponents ($\le 0$), and zero overflow risks. |
-| 7 | **Cross-Entropy Zero-Probability Singularity**<br>When model predicts $p_{\text{target}} = 0$, $-\ln(0)$ yields $-\infty$ (or NaN) during training loss computation. | **Epsilon-Bounded Categorical Cross-Entropy**<br>Applies strict boundary stabilization $-\ln(p_{\text{target}} + 10^{-15})$ coupled with direct analytical pre-softmax logit gradients $\frac{\partial \mathcal{L}}{\partial z_i} = p_i - \mathbf{1}(i = \text{target})$. |
-| 8 | **Initial Adam Step Bias & Weight Explosion**<br>Exponential moving averages of 1st and 2nd moments ($m_t, v_t$) start initialized at zero, causing severe step underestimation in early training epochs, and unconstrained weights lead to overfitting. | **Analytical Bias Corrections & $L_2$ Weight Decay**<br>Applies exact time-step power corrections $\hat{m}_t = \frac{m_t}{1 - \beta_1^t}$ and $\hat{v}_t = \frac{v_t}{1 - \beta_2^t}$ alongside integrated $L_2$ gradient penalty $g_t \leftarrow g_t + \lambda \theta_t$ ($\lambda = 10^{-4}$). |
-| 9 | **Fixed Learning Rate Coarse Convergence Stalling**<br>A static learning rate oscillates around local minima in later epochs or converges too slowly in early phases. | **Configurable Step Milestone LR Decay Scheduler**<br>Dynamically scales learning rates across training milestones (e.g. $\alpha_0 = 0.002 \to 50\% \to 25\%$) configurable via external JSON settings files with clean stdout logging. |
-| 10 | **CPU Multi-Core Mutex Contention Bottlenecks**<br>Parallel gradient reduction across multiple worker replicas typically suffers from mutex lock contention and false cache sharing. | **Lock-Free Contiguous Chunk Partitioning**<br>Workers write to non-overlapping master memory slices without mutex locks, maximizing CPU L1/L2 cache locality and scaling linearly with logical CPU cores. |
-| 11 | **Enterprise Windows AppLocker / Temp Execution Blocks**<br>On enterprise Windows environments, executing test or runtime binaries out of `%TEMP%` (`AppData\Local\Temp`) is blocked by Application Control policies (`An Application Control policy has blocked this file`). | **In-Workspace Local Binary Execution**<br>All binary builds and test runners execute locally within workspace paths (`bin/` or `.`), fully compliant with enterprise security and application control policies. |
+| 5 | **Resolution & Canvas Scale Domain Gap**<br>Sketches drawn on wide web canvases ($400\text{px}$) vs small dataset icons ($20\text{px}$) cause distribution shifts and classification failures. | **Scale-Invariant Proportional Padding & Centering**<br>Locates the tight foreground bounding box ($>10$ luminosity), calculates dynamic margin $\text{pad} = \max(2, \lfloor 0.22 \times D \rfloor)$, and centers into an $S \times S$ square canvas, ensuring foreground always occupies $\approx 70\%$ of canvas area. |
+| 6 | **Faint & Inconsistent Stroke Luminosity**<br>Variable stylus pressure or light sketching creates faint, low-contrast drawings that under-activate neural activations. | **Peak Stroke Luminosity Contrast Stretching**<br>Measures peak foreground luminosity $L_{\max}$; if $30 < L_{\max} < 240$, adaptively rescales intensities via $y' = \min(255, \text{round}(y \cdot 255.0 / L_{\max}))$. |
+| 7 | **Sub-Pixel Grid Aliasing & Distortion**<br>Discrete nearest-neighbor resizing produces jagged stroke edges and loss of diagonal manifold features. | **Sub-Pixel Bilinear Interpolation Resampling**<br>Resamples images to standard grid ($100 \times 100$) using continuous half-pixel shifted coordinates $(x+0.5)\frac{W_s}{W_t} - 0.5$ and 4-neighbor bilinear weighting. |
+| 8 | **Training Overfitting & Stroke Invariance Gaps**<br>Limited hand-drawn datasets lack variety in stroke thickness, hand slant, orientation, and spatial offsets. | **15-Variant Comprehensive Data Augmentor**<br>Generates 15 continuous geometric and morphological variants per sample: rotations ($\pm 10^\circ, \pm 15^\circ$), 2D directional shifts, horizontal slant shear ($\pm 0.20$), dilation thickening, and erosion thinning. |
+| 9 | **Spatial & Directional Representation Bottleneck**<br>Standard 1-channel or 3-channel convolutional architectures struggle to capture non-local diagonal textures and discrete spatial derivatives without deep networks. | **13-Channel Spatial Difference Manifold Calculus**<br>Precomputes an analytical 13-channel manifold comprising base grayscale intensity ($Ch_0$), 4 immediate diagonal differential operators ($Ch_{1-4}$), and all 8 chess knight-move differential operators ($Ch_{5-12}$) in parallel across CPU rows. |
+| 10 | **Softmax Floating-Point Overflow & NaN Hazards**<br>Computing $\exp(z_i)$ directly causes IEEE-754 single-precision overflow ($+\infty$) and `NaN` values whenever logits exceed $\approx 88.7$. | **Max-Logit Subtracted Stable Exponentiation**<br>Subtracts the maximum logit $m = \max_j z_j$ prior to exponentiation ($e_i = \exp(z_i - m)$), guaranteeing mathematical invariance, bounded exponents ($\le 0$), and zero overflow risks. |
+| 11 | **Cross-Entropy Zero-Probability Singularity**<br>When model predicts $p_{\text{target}} = 0$, $-\ln(0)$ yields $-\infty$ (or NaN) during training loss computation. | **Epsilon-Bounded Categorical Cross-Entropy**<br>Applies strict boundary stabilization $-\ln(p_{\text{target}} + 10^{-15})$ coupled with direct analytical pre-softmax logit gradients $\frac{\partial \mathcal{L}}{\partial z_i} = p_i - \mathbf{1}(i = \text{target})$. |
+| 12 | **Initial Adam Step Bias & Weight Explosion**<br>Exponential moving averages of 1st and 2nd moments ($m_t, v_t$) start initialized at zero, causing severe step underestimation in early training epochs, and unconstrained weights lead to overfitting. | **Analytical Bias Corrections & $L_2$ Weight Decay**<br>Applies exact time-step power corrections $\hat{m}_t = \frac{m_t}{1 - \beta_1^t}$ and $\hat{v}_t = \frac{v_t}{1 - \beta_2^t}$ alongside integrated $L_2$ gradient penalty $g_t \leftarrow g_t + \lambda \theta_t$ ($\lambda = 10^{-4}$). |
+| 13 | **Fixed Learning Rate Coarse Convergence Stalling**<br>A static learning rate oscillates around local minima in later epochs or converges too slowly in early phases. | **Configurable Step Milestone LR Decay Scheduler**<br>Dynamically scales learning rates across training milestones (e.g. $\alpha_0 = 0.002 \to 50\% \to 25\%$) configurable via external JSON settings files with clean stdout logging. |
+| 14 | **CPU Multi-Core Mutex Contention Bottlenecks**<br>Parallel gradient reduction across multiple worker replicas typically suffers from mutex lock contention and false cache sharing. | **Lock-Free Contiguous Chunk Partitioning**<br>Workers write to non-overlapping master memory slices without mutex locks, maximizing CPU L1/L2 cache locality and scaling linearly with logical CPU cores. |
+| 15 | **Enterprise Windows AppLocker / Temp Execution Blocks**<br>On enterprise Windows environments, executing test or runtime binaries out of `%TEMP%` (`AppData\Local\Temp`) is blocked by Application Control policies (`An Application Control policy has blocked this file`). | **In-Workspace Local Binary Execution**<br>All binary builds and test runners execute locally within workspace paths (`bin/` or `.`), fully compliant with enterprise security and application control policies. |
 
 ---
 
@@ -78,19 +83,24 @@ flowchart TD
     B --> C[Dynamic Bi-Directional Class Mapping K Classes]
     C --> D[Stratified Train/Val Splitter]
     D --> E[Pure Stdlib 8-Bit Grayscale Loader]
-    E --> F[13-Channel Spatial Manifold Generator]
-    F --> G[Conv2DLayer 13 -> OutC]
-    G --> H[ReLULayer / LeakyReLULayer]
-    H --> I[AdaptiveAvgPool2DLayer TargetH x TargetW]
-    I --> J[LinearLayer Dense Head -> K Outputs]
-    J --> K[DropoutLayer Inverted Dropout p=0.2]
-    K --> L[SoftmaxLayer Probability Distribution]
-    L --> M[CategoricalCrossEntropyLoss Criterion]
-    M --> N[Analytical Softmax Logit Gradient dL/dz = p - y]
-    N --> O[Analytical Jacobian Backpropagation]
-    O --> P[Lock-Free Parallel Gradient Reduction]
-    P --> Q[Adam Optimizer & Step LR Scheduler]
-    Q --> R[DIAGON01 Binary Model Persistence]
+    E --> F[Tight Bounding Box Locator]
+    F --> G[Scale-Invariant Proportional Padding ~70% Area]
+    G --> H[Peak Stroke Luminosity Contrast Stretching]
+    H --> I[Sub-Pixel Bilinear Resampling 100x100 Grid]
+    I --> J[15-Variant Data Augmentor Rot/Shift/Shear/Morph]
+    J --> K[13-Channel Spatial Manifold Generator]
+    K --> L[Conv2DLayer 13 -> OutC]
+    L --> M[ReLULayer / LeakyReLULayer]
+    M --> N[AdaptiveAvgPool2DLayer TargetH x TargetW]
+    N --> O[LinearLayer Dense Head -> K Outputs]
+    O --> P[DropoutLayer Inverted Dropout p=0.2]
+    P --> Q[SoftmaxLayer Probability Distribution]
+    Q --> R[CategoricalCrossEntropyLoss Criterion]
+    R --> S[Analytical Softmax Logit Gradient dL/dz = p - y]
+    S --> T[Analytical Jacobian Backpropagation]
+    T --> U[Lock-Free Parallel Gradient Reduction]
+    U --> V[Adam Optimizer & Step LR Scheduler]
+    V --> W[DIAGON01 Binary Model Persistence]
 ```
 
 ### 1. Hardware Topology & Multi-Core Concurrency
@@ -140,7 +150,16 @@ flowchart TD
 - **Stratified Train/Val Splitting**: Splits datasets with exact proportional representation per class ($\lfloor N_c \cdot \text{testRatio} \rfloor$) and deterministic pseudo-random shuffling (`TrainTestSplit`).
 - **Automated Health & Quality Auditor (`--audit`)**: Identifies corrupt files, 100% blank images, and tiny outlier drawings ($<30$ pixels), computes average bounding boxes, aspect ratios, and stroke densities, and outputs clean tabular reports (`AuditDataset`, `PrintAuditReport`).
 
-### 8. 13-Channel Spatial Difference Manifold Calculus
+### 8. Bounding Box, Contrast Stretching, Resampling & 15x Augmentation
+- **Tight Bounding Box Locator**: Computes $[\min X, \max X] \times [\min Y, \max Y]$ for foreground pixels $>10$ luminosity (`FindBoundingBox`, `FindBoundingBoxTensor`).
+- **Scale-Invariant Proportional Padding**: Expands canvas $S = D + 2 \times \max(2, \lfloor 0.22 \times D \rfloor)$ and centers features to ensure $\approx 70\%$ occupancy (`PadAndCenter`, `PadAndCenterTensor`).
+- **Peak Stroke Luminosity Contrast Stretching**: Normalizes faint strokes when $30 < L_{\max} < 240$ via $y' = \min(255, \text{round}(y \cdot 255.0 / L_{\max}))$ (`ContrastStretch`, `ContrastStretchTensor`).
+- **Sub-Pixel Bilinear Resampling**: Continuous half-pixel shifted bilinear interpolation to standard $100 \times 100$ spatial resolution (`ResizeBilinear`, `ResizeBilinearTensor`).
+- **Geometric Transformations**: Center-pivot continuous coordinate rotation (`RotateImage`), 2D translation (`ShiftImage`), and affine slant shearing (`ShearImage`).
+- **Morphological Filtering**: $3 \times 3$ maximum filter dilation (`MorphDilation`) and $3 \times 3$ minimum filter erosion (`MorphErosion`).
+- **15-Variant Augmentation Generator**: Generates 15 comprehensive variations per training image covering rotations ($\pm 10^\circ, \pm 15^\circ$), shifts, shears ($\pm 0.20$), and morphology (`AugmentImage`).
+
+### 9. 13-Channel Spatial Difference Manifold Calculus
 Transforms a 1-channel grayscale image into a 13-channel spatial difference manifold in parallel across CPU rows:
 - **Channel 0**: Base normalized grayscale intensity $I(x, y)$.
 - **Channels 1–4 (Immediate Diagonals)**: Absolute directional gradients:
@@ -150,7 +169,7 @@ Transforms a 1-channel grayscale image into a 13-channel spatial difference mani
   $$\mathcal{K} = \{ (-2, -1), (-2, +1), (-1, -2), (-1, +2), (+1, -2), (+1, +2), (+2, -1), (+2, +1) \}$$
 - **Parallelization**: Multi-threaded row slicing using `ComputeManifoldIntoSlice` and `ComputeManifoldTensor`.
 
-### 9. Neural Network Layers & Analytical Jacobian Autograd
+### 10. Neural Network Layers & Analytical Jacobian Autograd
 All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardInto`) for zero-allocation training loops:
 - **`Conv2DLayer`**:
   - Multi-channel 2D convolution with configurable kernel size $K$, stride $S$, and padding $P$.
@@ -176,7 +195,7 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
   - Inverted Bernoulli dropout regularization (default $p = 0.2$, scaling factor $\frac{1}{1-p} = 1.25$).
   - Exact gradient scaling during training mode and zero-overhead identity passthrough during evaluation mode.
 
-### 10. Dual-Mode CLI Routing Subsystem
+### 11. Dual-Mode CLI Routing Subsystem
 - **Flexible Argument Parsing**: Supports both Unix-style command flags and standard positional subcommands:
   - `train` / `-train`: Launch deep learning training pipeline.
   - `serve` / `-serve`: Start the interactive HTTP inference and dashboard runtime.
@@ -236,6 +255,16 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 | `TestLoadImageFromFileAndTensor` | Pure stdlib PNG/JPEG decoding and $[0.0, 1.0]$ tensor normalization | `PASS` |
 | `TestTrainTestSplitStratification` | Proportional stratified train/val splitting ($\lfloor N_c \cdot r \rfloor$) & deterministic shuffling | `PASS` |
 | `TestAuditDatasetQualityAndStats` | Corrupt, blank, and tiny outlier detection & bounding box geometry audit | `PASS` |
+| `TestFindBoundingBox` | Foreground bounding box coordinate search ($>10$ luminosity) and blank image check | `PASS` |
+| `TestPadAndCenterProportions` | Scale-invariant proportional padding ($\text{pad} = \lfloor 0.22 D \rfloor$) and $\approx 70\%$ occupancy | `PASS` |
+| `TestContrastStretch` | Adaptive peak luminosity contrast stretching ($y' = y \cdot 255.0 / L_{\max}$) | `PASS` |
+| `TestResizeBilinearInterpolation` | Sub-pixel bilinear interpolation resampling with half-pixel centering | `PASS` |
+| `TestRotateImageAndShift` | Continuous coordinate rotation around center and 2D translation | `PASS` |
+| `TestShearMorphologyAndAugmentImage` | Affine horizontal slant shear, $3\times 3$ dilation/erosion, and 15-variant augmentation | `PASS` |
+
+---
+
+## Project Directory Structure
 
 ---
 
@@ -248,8 +277,11 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 ```text
 C:\diagonalnet\
 ├── .gitignore              # Comprehensive enterprise ignore rules
-├── README.md               # Project documentation and architecture guide
-├── STDLIB.md               # Standard library replacements & technical rationale
+├── .zero-dep.toml          # Zero-dependency track specification and pitch
+├── Makefile                # Cross-platform single-command build & test runner
+├── README.md               # Architecture documentation, formulas, and user guide
+├── STDLIB.md               # Standard library replacements & zero-dep rationale
+├── deps-proof.txt          # Proof log demonstrating zero third-party dependencies
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
@@ -259,7 +291,7 @@ C:\diagonalnet\
 ├── assets/                 # Visual assets and documentation diagrams
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
 ├── data/                   # Dataset storage directory
-└── weights/                # Serialized DIAGON01 binary model weights
+└── weights/                # Binary model weights storage
 ```
 
 ---

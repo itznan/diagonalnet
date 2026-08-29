@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	_ "image/jpeg"
 	_ "image/png"
@@ -841,6 +842,732 @@ func GrayImageToTensor(gray *image.Gray) *Tensor {
 		}
 	}
 	return t
+}
+
+// BoundingBox defines the tight rectangular coordinate bounds of foreground pixels.
+type BoundingBox struct {
+	MinX int `json:"min_x"`
+	MinY int `json:"min_y"`
+	MaxX int `json:"max_x"`
+	MaxY int `json:"max_y"`
+}
+
+// Width returns the horizontal pixel extent: MaxX - MinX + 1.
+func (b *BoundingBox) Width() int {
+	if b == nil {
+		return 0
+	}
+	return b.MaxX - b.MinX + 1
+}
+
+// Height returns the vertical pixel extent: MaxY - MinY + 1.
+func (b *BoundingBox) Height() int {
+	if b == nil {
+		return 0
+	}
+	return b.MaxY - b.MinY + 1
+}
+
+// FindBoundingBox locates the tight bounding box enclosing foreground drawing pixels in an *image.Gray.
+//
+// Specifications:
+// 1. Minimum luminosity threshold = 10 (or configurable threshold).
+// 2. Finds min(x), min(y), max(x), max(y) where pixel luminosity > threshold.
+// 3. If no pixel exceeds threshold, returns nil indicating a blank image.
+func FindBoundingBox(gray *image.Gray, threshold uint8) *BoundingBox {
+	if gray == nil {
+		return nil
+	}
+	bounds := gray.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w == 0 || h == 0 {
+		return nil
+	}
+
+	minX, maxX := w, -1
+	minY, maxY := h, -1
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			pixel := gray.GrayAt(x, y).Y
+			if pixel > threshold {
+				relX := x - bounds.Min.X
+				relY := y - bounds.Min.Y
+				if relX < minX {
+					minX = relX
+				}
+				if relX > maxX {
+					maxX = relX
+				}
+				if relY < minY {
+					minY = relY
+				}
+				if relY > maxY {
+					maxY = relY
+				}
+			}
+		}
+	}
+
+	if maxX < 0 || maxY < 0 {
+		return nil // Blank image
+	}
+
+	return &BoundingBox{
+		MinX: minX,
+		MinY: minY,
+		MaxX: maxX,
+		MaxY: maxY,
+	}
+}
+
+// FindBoundingBoxTensor locates the tight bounding box on a 1xHxW Tensor.
+func FindBoundingBoxTensor(t *Tensor, threshold float32) *BoundingBox {
+	if t == nil || t.Height == 0 || t.Width == 0 {
+		return nil
+	}
+	minX, maxX := t.Width, -1
+	minY, maxY := t.Height, -1
+
+	for y := 0; y < t.Height; y++ {
+		for x := 0; x < t.Width; x++ {
+			val := t.Get(0, y, x)
+			if val > threshold {
+				if x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if y > maxY {
+					maxY = y
+				}
+			}
+		}
+	}
+
+	if maxX < 0 || maxY < 0 {
+		return nil
+	}
+
+	return &BoundingBox{
+		MinX: minX,
+		MinY: minY,
+		MaxX: maxX,
+		MaxY: maxY,
+	}
+}
+
+// PadAndCenter centers the cropped bounding box foreground into a square canvas
+// with scale-invariant proportional padding (22% margin per side, ~70% foreground occupancy).
+//
+// Algorithm:
+// 1. D = max(W_bbox, H_bbox)
+// 2. pad = max(2, floor(0.22 * D))
+// 3. S = D + 2 * pad
+// 4. Center bounding box into S x S canvas.
+func PadAndCenter(src *image.Gray, bbox *BoundingBox) *image.Gray {
+	if src == nil || bbox == nil {
+		return src
+	}
+	wBbox := bbox.Width()
+	hBbox := bbox.Height()
+	if wBbox <= 0 || hBbox <= 0 {
+		return src
+	}
+
+	d := wBbox
+	if hBbox > d {
+		d = hBbox
+	}
+
+	pad := int(math.Floor(0.22 * float64(d)))
+	if pad < 2 {
+		pad = 2
+	}
+
+	s := d + 2*pad
+	dst := image.NewGray(image.Rect(0, 0, s, s))
+
+	offsetX := (s - wBbox) / 2
+	offsetY := (s - hBbox) / 2
+
+	bounds := src.Bounds()
+	for dy := 0; dy < hBbox; dy++ {
+		srcY := bounds.Min.Y + bbox.MinY + dy
+		dstY := offsetY + dy
+		for dx := 0; dx < wBbox; dx++ {
+			srcX := bounds.Min.X + bbox.MinX + dx
+			dstX := offsetX + dx
+			if srcX < bounds.Max.X && srcY < bounds.Max.Y && dstX < s && dstY < s {
+				dst.SetGray(dstX, dstY, src.GrayAt(srcX, srcY))
+			}
+		}
+	}
+
+	return dst
+}
+
+// PadAndCenterTensor centers a bounding box on a 1xHxW Tensor into an SxS square Tensor.
+func PadAndCenterTensor(src *Tensor, bbox *BoundingBox) *Tensor {
+	if src == nil || bbox == nil {
+		return src
+	}
+	wBbox := bbox.Width()
+	hBbox := bbox.Height()
+	if wBbox <= 0 || hBbox <= 0 {
+		return src
+	}
+
+	d := wBbox
+	if hBbox > d {
+		d = hBbox
+	}
+
+	pad := int(math.Floor(0.22 * float64(d)))
+	if pad < 2 {
+		pad = 2
+	}
+
+	s := d + 2*pad
+	dst := NewTensor(src.Channels, s, s)
+
+	offsetX := (s - wBbox) / 2
+	offsetY := (s - hBbox) / 2
+
+	for c := 0; c < src.Channels; c++ {
+		for dy := 0; dy < hBbox; dy++ {
+			srcY := bbox.MinY + dy
+			dstY := offsetY + dy
+			for dx := 0; dx < wBbox; dx++ {
+				srcX := bbox.MinX + dx
+				dstX := offsetX + dx
+				if srcX < src.Width && srcY < src.Height && dstX < s && dstY < s {
+					val := src.Get(c, srcY, srcX)
+					dst.Set(c, dstY, dstX, val)
+				}
+			}
+		}
+	}
+
+	return dst
+}
+
+// ContrastStretch applies adaptive peak luminosity stretching to normalize faint and heavy pen strokes.
+//
+// Formulation:
+// 1. Find maximum pixel value L_max in the image.
+// 2. If 30 < L_max < 240, apply scale factor s = 255.0 / L_max.
+// 3. Adjusted pixel: y' = min(255, round(y * s)).
+func ContrastStretch(src *image.Gray) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w == 0 || h == 0 {
+		return src
+	}
+
+	// 1. Find L_max
+	var lMax uint8 = 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			p := src.GrayAt(x, y).Y
+			if p > lMax {
+				lMax = p
+			}
+		}
+	}
+
+	// 2. Check threshold: if not in (30, 240), return copy
+	dst := image.NewGray(bounds)
+	if lMax <= 30 || lMax >= 240 {
+		draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
+		return dst
+	}
+
+	// 3. Scale pixels
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			p := src.GrayAt(x, y).Y
+			val := int(math.Round(float64(p) * 255.0 / float64(lMax)))
+			if val > 255 {
+				val = 255
+			}
+			dst.SetGray(x, y, color.Gray{Y: uint8(val)})
+		}
+	}
+
+	return dst
+}
+
+// ContrastStretchTensor applies adaptive peak luminosity stretching to a 1xHxW Tensor.
+func ContrastStretchTensor(src *Tensor) *Tensor {
+	if src == nil {
+		return nil
+	}
+	var maxVal float32 = 0
+	for _, v := range src.Data {
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+
+	dst := src.Clone()
+	if maxVal <= (30.0/255.0) || maxVal >= (240.0/255.0) {
+		return dst
+	}
+
+	scale := float32(1.0) / maxVal
+	for i, v := range dst.Data {
+		val := v * scale
+		if val > 1.0 {
+			val = 1.0
+		}
+		dst.Data[i] = val
+	}
+	return dst
+}
+
+// ResizeBilinear resamples an *image.Gray to target dimensions (targetW x targetH)
+// using sub-pixel bilinear interpolation with continuous half-pixel centering.
+//
+// Formulation:
+// For target coordinate (x, y):
+// x_src = (x + 0.5) * (W_src / W_target) - 0.5
+// y_src = (y + 0.5) * (H_src / H_target) - 0.5
+//
+// Interpolate using the 4 bounding integer neighbors (x0, y0), (x1, y0), (x0, y1), (x1, y1)
+// with fractional weights fx = x_src - x0, fy = y_src - y0.
+func ResizeBilinear(src *image.Gray, targetW, targetH int) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	if targetW <= 0 || targetH <= 0 {
+		return image.NewGray(image.Rect(0, 0, 0, 0))
+	}
+
+	bounds := src.Bounds()
+	srcW := bounds.Dx()
+	srcH := bounds.Dy()
+	if srcW == 0 || srcH == 0 {
+		return image.NewGray(image.Rect(0, 0, targetW, targetH))
+	}
+
+	dst := image.NewGray(image.Rect(0, 0, targetW, targetH))
+
+	scaleX := float64(srcW) / float64(targetW)
+	scaleY := float64(srcH) / float64(targetH)
+
+	for ty := 0; ty < targetH; ty++ {
+		srcY := (float64(ty) + 0.5)*scaleY - 0.5
+		if srcY < 0 {
+			srcY = 0
+		}
+		if srcY > float64(srcH-1) {
+			srcY = float64(srcH - 1)
+		}
+
+		y0 := int(math.Floor(srcY))
+		y1 := y0 + 1
+		if y1 >= srcH {
+			y1 = srcH - 1
+		}
+		fy := srcY - float64(y0)
+
+		for tx := 0; tx < targetW; tx++ {
+			srcX := (float64(tx) + 0.5)*scaleX - 0.5
+			if srcX < 0 {
+				srcX = 0
+			}
+			if srcX > float64(srcW-1) {
+				srcX = float64(srcW - 1)
+			}
+
+			x0 := int(math.Floor(srcX))
+			x1 := x0 + 1
+			if x1 >= srcW {
+				x1 = srcW - 1
+			}
+			fx := srcX - float64(x0)
+
+			// 4 neighbor pixel values
+			p00 := float64(src.GrayAt(bounds.Min.X+x0, bounds.Min.Y+y0).Y)
+			p10 := float64(src.GrayAt(bounds.Min.X+x1, bounds.Min.Y+y0).Y)
+			p01 := float64(src.GrayAt(bounds.Min.X+x0, bounds.Min.Y+y1).Y)
+			p11 := float64(src.GrayAt(bounds.Min.X+x1, bounds.Min.Y+y1).Y)
+
+			// Bilinear interpolation
+			val := (1.0-fx)*(1.0-fy)*p00 +
+				fx*(1.0-fy)*p10 +
+				(1.0-fx)*fy*p01 +
+				fx*fy*p11
+
+			vInt := int(math.Round(val))
+			if vInt < 0 {
+				vInt = 0
+			}
+			if vInt > 255 {
+				vInt = 255
+			}
+
+			dst.SetGray(tx, ty, color.Gray{Y: uint8(vInt)})
+		}
+	}
+
+	return dst
+}
+
+// ResizeBilinearTensor resamples a [Channels x Height x Width] Tensor to [Channels x targetH x targetW]
+// using sub-pixel bilinear interpolation.
+func ResizeBilinearTensor(src *Tensor, targetW, targetH int) *Tensor {
+	if src == nil {
+		return nil
+	}
+	if targetW <= 0 || targetH <= 0 {
+		return NewTensor(src.Channels, 0, 0)
+	}
+
+	dst := NewTensor(src.Channels, targetH, targetW)
+	if src.Width == 0 || src.Height == 0 {
+		return dst
+	}
+
+	scaleX := float32(src.Width) / float32(targetW)
+	scaleY := float32(src.Height) / float32(targetH)
+
+	for ty := 0; ty < targetH; ty++ {
+		srcY := (float32(ty) + 0.5)*scaleY - 0.5
+		if srcY < 0 {
+			srcY = 0
+		}
+		if srcY > float32(src.Height-1) {
+			srcY = float32(src.Height - 1)
+		}
+
+		y0 := int(math.Floor(float64(srcY)))
+		y1 := y0 + 1
+		if y1 >= src.Height {
+			y1 = src.Height - 1
+		}
+		fy := srcY - float32(y0)
+
+		for tx := 0; tx < targetW; tx++ {
+			srcX := (float32(tx) + 0.5)*scaleX - 0.5
+			if srcX < 0 {
+				srcX = 0
+			}
+			if srcX > float32(src.Width-1) {
+				srcX = float32(src.Width - 1)
+			}
+
+			x0 := int(math.Floor(float64(srcX)))
+			x1 := x0 + 1
+			if x1 >= src.Width {
+				x1 = src.Width - 1
+			}
+			fx := srcX - float32(x0)
+
+			for c := 0; c < src.Channels; c++ {
+				p00 := src.Get(c, y0, x0)
+				p10 := src.Get(c, y0, x1)
+				p01 := src.Get(c, y1, x0)
+				p11 := src.Get(c, y1, x1)
+
+				val := (1.0-fx)*(1.0-fy)*p00 +
+					fx*(1.0-fy)*p10 +
+					(1.0-fx)*fy*p01 +
+					fx*fy*p11
+
+				if val < 0.0 {
+					val = 0.0
+				}
+				if val > 1.0 {
+					val = 1.0
+				}
+				dst.Set(c, ty, tx, val)
+			}
+		}
+	}
+
+	return dst
+}
+
+// sampleBilinearGray interpolates pixel luminosity from continuous coordinates (xSrc, ySrc).
+func sampleBilinearGray(src *image.Gray, xSrc, ySrc float64) uint8 {
+	bounds := src.Bounds()
+	srcW := bounds.Dx()
+	srcH := bounds.Dy()
+	if srcW == 0 || srcH == 0 {
+		return 0
+	}
+	if xSrc < 0 || xSrc > float64(srcW-1) || ySrc < 0 || ySrc > float64(srcH-1) {
+		return 0
+	}
+
+	x0 := int(math.Floor(xSrc))
+	x1 := x0 + 1
+	if x1 >= srcW {
+		x1 = srcW - 1
+	}
+	fx := xSrc - float64(x0)
+
+	y0 := int(math.Floor(ySrc))
+	y1 := y0 + 1
+	if y1 >= srcH {
+		y1 = srcH - 1
+	}
+	fy := ySrc - float64(y0)
+
+	p00 := float64(src.GrayAt(bounds.Min.X+x0, bounds.Min.Y+y0).Y)
+	p10 := float64(src.GrayAt(bounds.Min.X+x1, bounds.Min.Y+y0).Y)
+	p01 := float64(src.GrayAt(bounds.Min.X+x0, bounds.Min.Y+y1).Y)
+	p11 := float64(src.GrayAt(bounds.Min.X+x1, bounds.Min.Y+y1).Y)
+
+	val := (1.0-fx)*(1.0-fy)*p00 +
+		fx*(1.0-fy)*p10 +
+		(1.0-fx)*fy*p01 +
+		fx*fy*p11
+
+	vInt := int(math.Round(val))
+	if vInt < 0 {
+		vInt = 0
+	}
+	if vInt > 255 {
+		vInt = 255
+	}
+	return uint8(vInt)
+}
+
+// RotateImage rotates an *image.Gray around its center (cx, cy) by angleDeg degrees
+// using backward continuous coordinate rotation with bilinear sampling.
+func RotateImage(src *image.Gray, angleDeg float64) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w == 0 || h == 0 || angleDeg == 0 {
+		dst := image.NewGray(bounds)
+		draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
+		return dst
+	}
+
+	dst := image.NewGray(bounds)
+	cx := float64(w-1) / 2.0
+	cy := float64(h-1) / 2.0
+
+	rad := angleDeg * math.Pi / 180.0
+	cosA := math.Cos(rad)
+	sinA := math.Sin(rad)
+
+	for y := 0; y < h; y++ {
+		dy := float64(y) - cy
+		for x := 0; x < w; x++ {
+			dx := float64(x) - cx
+
+			// Backward rotation mapping: [x_src, y_src]^T = R(-theta) [dx, dy]^T + [cx, cy]^T
+			xSrc := cx + dx*cosA + dy*sinA
+			ySrc := cy - dx*sinA + dy*cosA
+
+			pix := sampleBilinearGray(src, xSrc, ySrc)
+			dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, color.Gray{Y: pix})
+		}
+	}
+
+	return dst
+}
+
+// ShiftImage translates an *image.Gray by (dx, dy) pixels, filling exposed margins with 0 (black).
+func ShiftImage(src *image.Gray, dx, dy int) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	dst := image.NewGray(bounds)
+	if w == 0 || h == 0 {
+		return dst
+	}
+
+	for y := 0; y < h; y++ {
+		srcY := y - dy
+		for x := 0; x < w; x++ {
+			srcX := x - dx
+			if srcX >= 0 && srcX < w && srcY >= 0 && srcY < h {
+				p := src.GrayAt(bounds.Min.X+srcX, bounds.Min.Y+srcY)
+				dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, p)
+			} else {
+				dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, color.Gray{Y: 0})
+			}
+		}
+	}
+
+	return dst
+}
+
+// ShearImage applies affine horizontal slant shear: x_src = x - (y - cy) * shearX.
+func ShearImage(src *image.Gray, shearX float64) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	if w == 0 || h == 0 || shearX == 0 {
+		dst := image.NewGray(bounds)
+		draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
+		return dst
+	}
+
+	dst := image.NewGray(bounds)
+	cy := float64(h-1) / 2.0
+
+	for y := 0; y < h; y++ {
+		dy := float64(y) - cy
+		for x := 0; x < w; x++ {
+			xSrc := float64(x) - dy*shearX
+			ySrc := float64(y)
+
+			pix := sampleBilinearGray(src, xSrc, ySrc)
+			dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, color.Gray{Y: pix})
+		}
+	}
+
+	return dst
+}
+
+// MorphDilation applies a 3x3 maximum filter for pen stroke thickening.
+func MorphDilation(src *image.Gray) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	dst := image.NewGray(bounds)
+	if w == 0 || h == 0 {
+		return dst
+	}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var maxVal uint8 = 0
+			for dy := -1; dy <= 1; dy++ {
+				ny := y + dy
+				if ny < 0 || ny >= h {
+					continue
+				}
+				for dx := -1; dx <= 1; dx++ {
+					nx := x + dx
+					if nx < 0 || nx >= w {
+						continue
+					}
+					p := src.GrayAt(bounds.Min.X+nx, bounds.Min.Y+ny).Y
+					if p > maxVal {
+						maxVal = p
+					}
+				}
+			}
+			dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, color.Gray{Y: maxVal})
+		}
+	}
+
+	return dst
+}
+
+// MorphErosion applies a 3x3 minimum filter for pen stroke thinning.
+func MorphErosion(src *image.Gray) *image.Gray {
+	if src == nil {
+		return nil
+	}
+	bounds := src.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	dst := image.NewGray(bounds)
+	if w == 0 || h == 0 {
+		return dst
+	}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var minVal uint8 = 255
+			for dy := -1; dy <= 1; dy++ {
+				ny := y + dy
+				if ny < 0 || ny >= h {
+					minVal = 0
+					continue
+				}
+				for dx := -1; dx <= 1; dx++ {
+					nx := x + dx
+					if nx < 0 || nx >= w {
+						minVal = 0
+						continue
+					}
+					p := src.GrayAt(bounds.Min.X+nx, bounds.Min.Y+ny).Y
+					if p < minVal {
+						minVal = p
+					}
+				}
+			}
+			dst.SetGray(bounds.Min.X+x, bounds.Min.Y+y, color.Gray{Y: minVal})
+		}
+	}
+
+	return dst
+}
+
+// AugmentImage generates 15 comprehensive geometric and morphological variants per training image:
+// 1. Original image
+// 2-5. Rotations: -15 deg, +15 deg, -10 deg, +10 deg
+// 6-11. Shifts: (-3, 0), (+3, 0), (0, -3), (0, +3), (+2, +2), (-2, -2)
+// 12-13. Horizontal shears: -0.20, +0.20
+// 14. Morphological dilation (stroke thickening)
+// 15. Morphological erosion (stroke thinning)
+func AugmentImage(src *image.Gray) []*image.Gray {
+	if src == nil {
+		return nil
+	}
+	variants := make([]*image.Gray, 0, 15)
+
+	// 1. Original
+	orig := image.NewGray(src.Bounds())
+	draw.Draw(orig, src.Bounds(), src, src.Bounds().Min, draw.Src)
+	variants = append(variants, orig)
+
+	// 2-5. Rotations
+	variants = append(variants, RotateImage(src, -15.0))
+	variants = append(variants, RotateImage(src, 15.0))
+	variants = append(variants, RotateImage(src, -10.0))
+	variants = append(variants, RotateImage(src, 10.0))
+
+	// 6-11. Shifts
+	variants = append(variants, ShiftImage(src, -3, 0))
+	variants = append(variants, ShiftImage(src, 3, 0))
+	variants = append(variants, ShiftImage(src, 0, -3))
+	variants = append(variants, ShiftImage(src, 0, 3))
+	variants = append(variants, ShiftImage(src, 2, 2))
+	variants = append(variants, ShiftImage(src, -2, -2))
+
+	// 12-13. Horizontal Shears
+	variants = append(variants, ShearImage(src, -0.20))
+	variants = append(variants, ShearImage(src, 0.20))
+
+	// 14. Morphological Dilation
+	variants = append(variants, MorphDilation(src))
+
+	// 15. Morphological Erosion
+	variants = append(variants, MorphErosion(src))
+
+	return variants
 }
 
 // TrainTestSplit partitions samples into stratified train and validation sets ensuring

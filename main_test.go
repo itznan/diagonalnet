@@ -1687,6 +1687,298 @@ func TestAuditDatasetQualityAndStats(t *testing.T) {
 	PrintAuditReport(report)
 }
 
+// 20. Tight Bounding Box Locator Unit Tests (Prompt 35)
+func TestFindBoundingBox(t *testing.T) {
+	// 100x100 grayscale image with foreground in [20, 35] x [40, 75]
+	gray := image.NewGray(image.Rect(0, 0, 100, 100))
+	for y := 40; y <= 75; y++ {
+		for x := 20; x <= 35; x++ {
+			gray.SetGray(x, y, color.Gray{Y: 255})
+		}
+	}
+
+	bbox := FindBoundingBox(gray, 10)
+	if bbox == nil {
+		t.Fatalf("expected valid bounding box, got nil")
+	}
+
+	if bbox.MinX != 20 || bbox.MaxX != 35 || bbox.MinY != 40 || bbox.MaxY != 75 {
+		t.Fatalf("bounding box coordinate mismatch: %+v", bbox)
+	}
+	if bbox.Width() != 16 || bbox.Height() != 36 {
+		t.Fatalf("bounding box dimension mismatch: %d x %d", bbox.Width(), bbox.Height())
+	}
+
+	// Test blank image returns nil
+	blank := image.NewGray(image.Rect(0, 0, 50, 50))
+	if bboxBlank := FindBoundingBox(blank, 10); bboxBlank != nil {
+		t.Fatalf("expected nil bounding box for blank image, got %+v", bboxBlank)
+	}
+
+	// Test Tensor version
+	tensor := GrayImageToTensor(gray)
+	bboxTensor := FindBoundingBoxTensor(tensor, 0.05)
+	if bboxTensor == nil || bboxTensor.MinX != 20 || bboxTensor.MaxX != 35 || bboxTensor.MinY != 40 || bboxTensor.MaxY != 75 {
+		t.Fatalf("tensor bounding box mismatch: %+v", bboxTensor)
+	}
+}
+
+// 21. Scale-Invariant Proportional Padding & Centering Unit Tests (Prompt 36)
+func TestPadAndCenterProportions(t *testing.T) {
+	// Let W_bbox = 20, H_bbox = 30 -> D = 30
+	// pad = max(2, floor(0.22 * 30)) = max(2, 6) = 6
+	// S = 30 + 2*6 = 42
+	// Target occupancy: D / S = 30 / 42 ~= 71.4%
+	gray := image.NewGray(image.Rect(0, 0, 100, 100))
+	for y := 10; y < 40; y++ {
+		for x := 10; x < 30; x++ {
+			gray.SetGray(x, y, color.Gray{Y: 200})
+		}
+	}
+
+	bbox := FindBoundingBox(gray, 10)
+	if bbox == nil {
+		t.Fatalf("expected bounding box")
+	}
+	if bbox.Width() != 20 || bbox.Height() != 30 {
+		t.Fatalf("expected bbox 20x30, got %dx%d", bbox.Width(), bbox.Height())
+	}
+
+	centered := PadAndCenter(gray, bbox)
+	if centered.Bounds().Dx() != 42 || centered.Bounds().Dy() != 42 {
+		t.Fatalf("expected centered canvas 42x42, got %dx%d", centered.Bounds().Dx(), centered.Bounds().Dy())
+	}
+
+	// Verify foreground pixels are centered:
+	// offsetX = (42 - 20) / 2 = 11
+	// offsetY = (42 - 30) / 2 = 6
+	if centered.GrayAt(11, 6).Y != 200 {
+		t.Fatalf("top-left of centered foreground not found at (11, 6)")
+	}
+	if centered.GrayAt(11+19, 6+29).Y != 200 {
+		t.Fatalf("bottom-right of centered foreground not found at (30, 35)")
+	}
+	// Verify padding area is 0
+	if centered.GrayAt(0, 0).Y != 0 {
+		t.Fatalf("padding margin at (0, 0) should be 0")
+	}
+
+	// Test Tensor version
+	tensor := GrayImageToTensor(gray)
+	centeredTensor := PadAndCenterTensor(tensor, bbox)
+	if centeredTensor.Height != 42 || centeredTensor.Width != 42 {
+		t.Fatalf("expected centered tensor 42x42, got %dx%d", centeredTensor.Height, centeredTensor.Width)
+	}
+	if centeredTensor.Get(0, 6, 11) == 0 {
+		t.Fatalf("top-left of centered tensor foreground not found at (11, 6)")
+	}
+}
+
+// 22. Peak Stroke Luminosity & Dynamic Contrast Stretching Unit Tests (Prompt 37)
+func TestContrastStretch(t *testing.T) {
+	// Case 1: Faint image with L_max = 100 in (30, 240)
+	gray := image.NewGray(image.Rect(0, 0, 10, 10))
+	gray.SetGray(2, 2, color.Gray{Y: 100}) // L_max
+	gray.SetGray(3, 3, color.Gray{Y: 50})
+	gray.SetGray(4, 4, color.Gray{Y: 0})
+
+	stretched := ContrastStretch(gray)
+	// Scale = 255.0 / 100 = 2.55
+	// Pixel 100 -> 255
+	if stretched.GrayAt(2, 2).Y != 255 {
+		t.Fatalf("expected stretched max 255, got %d", stretched.GrayAt(2, 2).Y)
+	}
+	// Pixel 50 -> round(50 * 2.55) = 128
+	if stretched.GrayAt(3, 3).Y != 128 {
+		t.Fatalf("expected scaled pixel 128, got %d", stretched.GrayAt(3, 3).Y)
+	}
+	if stretched.GrayAt(4, 4).Y != 0 {
+		t.Fatalf("expected background 0, got %d", stretched.GrayAt(4, 4).Y)
+	}
+
+	// Case 2: High contrast image with L_max >= 240 (e.g. 250) -> should remain unchanged
+	highContrast := image.NewGray(image.Rect(0, 0, 5, 5))
+	highContrast.SetGray(1, 1, color.Gray{Y: 250})
+	highContrast.SetGray(2, 2, color.Gray{Y: 100})
+	stretchedHigh := ContrastStretch(highContrast)
+	if stretchedHigh.GrayAt(1, 1).Y != 250 || stretchedHigh.GrayAt(2, 2).Y != 100 {
+		t.Fatalf("expected high contrast to remain unchanged")
+	}
+
+	// Case 3: Very faint image with L_max <= 30 (e.g. 20) -> should remain unchanged
+	veryFaint := image.NewGray(image.Rect(0, 0, 5, 5))
+	veryFaint.SetGray(1, 1, color.Gray{Y: 20})
+	stretchedFaint := ContrastStretch(veryFaint)
+	if stretchedFaint.GrayAt(1, 1).Y != 20 {
+		t.Fatalf("expected very faint image to remain unchanged")
+	}
+
+	// Tensor version test
+	tensor := GrayImageToTensor(gray)
+	stretchedTensor := ContrastStretchTensor(tensor)
+	if math.Abs(float64(stretchedTensor.Get(0, 2, 2)-1.0)) > 1e-4 {
+		t.Fatalf("expected tensor max ~1.0, got %f", stretchedTensor.Get(0, 2, 2))
+	}
+}
+
+// 23. Sub-Pixel Bilinear Interpolation Resampling Unit Tests (Prompt 38)
+func TestResizeBilinearInterpolation(t *testing.T) {
+	// Create 2x2 image:
+	// [10,  20]
+	// [30,  40]
+	src := image.NewGray(image.Rect(0, 0, 2, 2))
+	src.SetGray(0, 0, color.Gray{Y: 10})
+	src.SetGray(1, 0, color.Gray{Y: 20})
+	src.SetGray(0, 1, color.Gray{Y: 30})
+	src.SetGray(1, 1, color.Gray{Y: 40})
+
+	// Resize to 4x4
+	dst := ResizeBilinear(src, 4, 4)
+	if dst.Bounds().Dx() != 4 || dst.Bounds().Dy() != 4 {
+		t.Fatalf("expected 4x4 bounds, got %v", dst.Bounds())
+	}
+
+	// Center-most values should smoothly interpolate between 10 and 40
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			val := dst.GrayAt(x, y).Y
+			if val < 10 || val > 40 {
+				t.Fatalf("interpolated pixel at (%d, %d) out of bounds: %d", x, y, val)
+			}
+		}
+	}
+
+	// Top-left should be closest to 10, bottom-right should be closest to 40
+	if dst.GrayAt(0, 0).Y > dst.GrayAt(3, 3).Y {
+		t.Fatalf("expected monotonic gradient from top-left to bottom-right")
+	}
+
+	// Resize to standard 100x100 grid
+	dst100 := ResizeBilinear(src, 100, 100)
+	if dst100.Bounds().Dx() != 100 || dst100.Bounds().Dy() != 100 {
+		t.Fatalf("expected 100x100 bounds, got %v", dst100.Bounds())
+	}
+
+	// Tensor version test
+	tensor := GrayImageToTensor(src)
+	dstTensor := ResizeBilinearTensor(tensor, 100, 100)
+	if dstTensor.Channels != 1 || dstTensor.Height != 100 || dstTensor.Width != 100 {
+		t.Fatalf("tensor resize shape mismatch: [%d, %d, %d]", dstTensor.Channels, dstTensor.Height, dstTensor.Width)
+	}
+}
+
+// 24. Continuous Coordinate Rotation & 2D Translation Unit Tests (Prompt 39)
+func TestRotateImageAndShift(t *testing.T) {
+	// 1. Test RotateImage with 0 degrees (identity)
+	src := image.NewGray(image.Rect(0, 0, 20, 20))
+	src.SetGray(10, 10, color.Gray{Y: 255})
+	rot0 := RotateImage(src, 0.0)
+	if rot0.GrayAt(10, 10).Y != 255 {
+		t.Fatalf("0-deg rotation should preserve center pixel")
+	}
+
+	// 2. Test RotateImage with small angle (e.g. 15 degrees)
+	rot15 := RotateImage(src, 15.0)
+	if rot15.Bounds().Dx() != 20 || rot15.Bounds().Dy() != 20 {
+		t.Fatalf("rotation bounds mismatch: %v", rot15.Bounds())
+	}
+	// Center pixel (10, 10) is the pivot, should remain bright
+	if rot15.GrayAt(10, 10).Y == 0 {
+		t.Fatalf("pivot center pixel should remain non-zero")
+	}
+
+	// 3. Test ShiftImage
+	shifted := ShiftImage(src, 3, -2)
+	// (10, 10) shifted by (+3, -2) becomes (13, 8)
+	if shifted.GrayAt(13, 8).Y != 255 {
+		t.Fatalf("shifted pixel at (13, 8) not found")
+	}
+	if shifted.GrayAt(10, 10).Y != 0 {
+		t.Fatalf("original location (10, 10) should be 0 after shift")
+	}
+	// Margin checks
+	if shifted.GrayAt(0, 0).Y != 0 || shifted.GrayAt(19, 19).Y != 0 {
+		t.Fatalf("margins should be 0")
+	}
+}
+
+// 25. Slant Shear & Morphological Dilation / Erosion Unit Tests (Prompt 40)
+func TestShearMorphologyAndAugmentImage(t *testing.T) {
+	// 1. Test ShearImage
+	src := image.NewGray(image.Rect(0, 0, 21, 21))
+	// Vertical line at x=10
+	for y := 0; y < 21; y++ {
+		src.SetGray(10, y, color.Gray{Y: 255})
+	}
+	sheared := ShearImage(src, 0.3)
+	// Center row (y=10, cy=10) should stay at x=10
+	if sheared.GrayAt(10, 10).Y != 255 {
+		t.Fatalf("center row pivot should remain at x=10")
+	}
+	// Top row (y=0, dy=-10) -> xSrc = x - (-10)*0.3 = x + 3 = 10 -> x = 7
+	if sheared.GrayAt(7, 0).Y < 150 {
+		t.Fatalf("top row of sheared slant expected near x=7, got %d", sheared.GrayAt(7, 0).Y)
+	}
+	// Bottom row (y=20, dy=+10) -> xSrc = x - (+10)*0.3 = x - 3 = 10 -> x = 13
+	if sheared.GrayAt(13, 20).Y < 150 {
+		t.Fatalf("bottom row of sheared slant expected near x=13, got %d", sheared.GrayAt(13, 20).Y)
+	}
+
+	// 2. Test MorphDilation (3x3 max filter)
+	pointImg := image.NewGray(image.Rect(0, 0, 10, 10))
+	pointImg.SetGray(5, 5, color.Gray{Y: 200})
+	dilated := MorphDilation(pointImg)
+	// 3x3 window around (5,5) should all be 200
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dilated.GrayAt(5+dx, 5+dy).Y != 200 {
+				t.Fatalf("dilated pixel at (%d, %d) mismatch: %d", 5+dx, 5+dy, dilated.GrayAt(5+dx, 5+dy).Y)
+			}
+		}
+	}
+	if dilated.GrayAt(0, 0).Y != 0 {
+		t.Fatalf("unaffected area should be 0")
+	}
+
+	// 3. Test MorphErosion (3x3 min filter)
+	boxImg := image.NewGray(image.Rect(0, 0, 10, 10))
+	for y := 4; y <= 6; y++ {
+		for x := 4; x <= 6; x++ {
+			boxImg.SetGray(x, y, color.Gray{Y: 200})
+		}
+	}
+	eroded := MorphErosion(boxImg)
+	// Only center (5, 5) had all 8 neighbors at 200
+	if eroded.GrayAt(5, 5).Y != 200 {
+		t.Fatalf("eroded center pixel should survive: %d", eroded.GrayAt(5, 5).Y)
+	}
+	// Outer border pixels should be eroded to 0
+	if eroded.GrayAt(4, 4).Y != 0 || eroded.GrayAt(6, 6).Y != 0 {
+		t.Fatalf("outer border should be eroded to 0")
+	}
+
+	// 4. Test AugmentImage returns 15 valid variants
+	testImg := image.NewGray(image.Rect(0, 0, 32, 32))
+	for i := 10; i < 22; i++ {
+		testImg.SetGray(i, i, color.Gray{Y: 255})
+	}
+	variants := AugmentImage(testImg)
+	if len(variants) != 15 {
+		t.Fatalf("expected 15 augmented variants, got %d", len(variants))
+	}
+	for idx, v := range variants {
+		if v == nil {
+			t.Fatalf("variant %d is nil", idx)
+		}
+		if v.Bounds().Dx() != 32 || v.Bounds().Dy() != 32 {
+			t.Fatalf("variant %d bounds mismatch: %v", idx, v.Bounds())
+		}
+	}
+}
+
+
+
+
 
 
 

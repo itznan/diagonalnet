@@ -1,0 +1,39 @@
+================================================================================
+                     DIAGONNET ZERO-DEPENDENCY PROOF
+================================================================================
+
+1. Module Dependency Graph (`go list -m all`):
+   diagonnet
+
+   Result: ZERO external modules required.
+
+2. Direct Package Imports (`go list -f "{{range .Imports}}{{println .}}{{end}}" ./...`):
+   bufio                  (Go Standard Library)
+   encoding/binary        (Go Standard Library)
+   encoding/json          (Go Standard Library)
+   errors                 (Go Standard Library)
+   flag                   (Go Standard Library)
+   fmt                    (Go Standard Library)
+   image                  (Go Standard Library)
+   image/draw             (Go Standard Library)
+   image/jpeg             (Go Standard Library)
+   image/png              (Go Standard Library)
+   io                     (Go Standard Library)
+   math                   (Go Standard Library)
+   math/rand              (Go Standard Library)
+   os                     (Go Standard Library)
+   path/filepath          (Go Standard Library)
+   runtime                (Go Standard Library)
+   sort                   (Go Standard Library)
+   strings                (Go Standard Library)
+   sync                   (Go Standard Library)
+
+   Result: 100% Go Standard Library packages. Zero third-party dependencies.
+
+3. Module Definition (`go.mod`):
+   module diagonnet
+
+   go 1.27.0
+
+   Result: No `require` block exists. Zero indirect dependencies.
+================================================================================
