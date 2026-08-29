@@ -4892,13 +4892,22 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	for ep := 1; ep <= epochs; ep++ {
 		epStart := time.Now()
 
-		// Step LR schedule if milestone reached
-		if ep == 8 {
-			optimizer.Config.LearningRate = lr * 0.5
+		// Dynamic Proportional Step LR schedule (Milestone 1 at ~40%, Milestone 2 at ~75%)
+		m1 := epochs * 40 / 100
+		if m1 < 4 {
+			m1 = 4
+		}
+		m2 := epochs * 75 / 100
+		if m2 <= m1 {
+			m2 = m1 + 2
+		}
+
+		if ep == m1 {
+			optimizer.Config.LearningRate = lr * 0.50
 			fmt.Printf(" >>> [LR Scheduler] Epoch %d: Learning rate adjusted to %.6f (50%%)\n", ep, optimizer.Config.LearningRate)
-		} else if ep == 16 {
-			optimizer.Config.LearningRate = lr * 0.25
-			fmt.Printf(" >>> [LR Scheduler] Epoch %d: Learning rate adjusted to %.6f (25%%)\n", ep, optimizer.Config.LearningRate)
+		} else if ep == m2 {
+			optimizer.Config.LearningRate = lr * 0.20
+			fmt.Printf(" >>> [LR Scheduler] Epoch %d: Learning rate adjusted to %.6f (20%%)\n", ep, optimizer.Config.LearningRate)
 		}
 
 		// Shuffle training data
