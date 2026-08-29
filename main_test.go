@@ -2367,9 +2367,9 @@ func TestPreprocessWebImagePipeline(t *testing.T) {
 	if isBlank {
 		t.Fatalf("expected valid non-blank image, got isBlank=true")
 	}
-	if tensor.Channels != 1 || tensor.Height != 100 || tensor.Width != 100 {
-		t.Fatalf("expected preprocessed tensor [1, 100, 100], got [%d, %d, %d]",
-			tensor.Channels, tensor.Height, tensor.Width)
+	if tensor.Channels != 1 || tensor.Height != InputSize || tensor.Width != InputSize {
+		t.Fatalf("expected preprocessed tensor [1, %d, %d], got [%d, %d, %d]",
+			InputSize, InputSize, tensor.Channels, tensor.Height, tensor.Width)
 	}
 
 	// 2. Blank Image (all black)
@@ -2378,9 +2378,9 @@ func TestPreprocessWebImagePipeline(t *testing.T) {
 	if !isBlank {
 		t.Fatalf("expected isBlank=true for all-black canvas")
 	}
-	if blankTensor.Channels != 1 || blankTensor.Height != 100 || blankTensor.Width != 100 {
-		t.Fatalf("expected blank tensor [1, 100, 100], got [%d, %d, %d]",
-			blankTensor.Channels, blankTensor.Height, blankTensor.Width)
+	if blankTensor.Channels != 1 || blankTensor.Height != InputSize || blankTensor.Width != InputSize {
+		t.Fatalf("expected blank tensor [1, %d, %d], got [%d, %d, %d]",
+			InputSize, InputSize, blankTensor.Channels, blankTensor.Height, blankTensor.Width)
 	}
 }
 

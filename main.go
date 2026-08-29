@@ -46,6 +46,15 @@ const banner = `
 ================================================================================
 `
 
+// InputSize is the square spatial resolution (InputSize x InputSize) that every image is
+// resampled to after bounding-box cropping, centering and contrast stretching.
+//
+// Training, benchmarking and live web inference all read this single constant. If the training
+// pipeline and the inference pipeline disagree on this value the convolutional receptive fields
+// seen at serve time no longer match the ones the weights were fitted on, which silently
+// destroys accuracy. Keep it as the one knob.
+const InputSize = 28
+
 // NumWorkers returns the number of worker goroutines scaled to system hardware (minimum 1)
 func NumWorkers() int {
 	n := runtime.NumCPU()
@@ -4226,25 +4235,43 @@ func TrainBenchmarkModel(model TrainableModel, trainSamples, valSamples []Sample
 }
 
 // GenerateSyntheticBenchmarkDataset creates a deterministic synthetic vision dataset of K classes with geometric shapes.
+// All geometry is expressed as a fraction of the canvas so the generator follows InputSize
+// instead of being pinned to a hardcoded 100x100 grid (which would make the benchmark run at a
+// completely different resolution from training).
 func GenerateSyntheticBenchmarkDataset(numClasses int, samplesPerClass int, seed int64) []Sample {
 	rng := rand.New(rand.NewSource(seed))
 	samples := make([]Sample, 0, numClasses*samplesPerClass)
 
+	S := InputSize
+	f := float64(S)
+
+	// Stroke half-width, never thinner than a single pixel at small canvas sizes.
+	stroke := 0.03 * f
+	if stroke < 1.0 {
+		stroke = 1.0
+	}
+	// Inner drawing region [lo, hi).
+	lo := int(0.20 * f)
+	hi := int(0.80 * f)
+
 	for c := 0; c < numClasses; c++ {
 		for s := 0; s < samplesPerClass; s++ {
-			t := NewTensor(1, 100, 100)
-			cx := 50 + rng.Intn(11) - 5
-			cy := 50 + rng.Intn(11) - 5
-			radius := 18 + rng.Intn(9)
+			t := NewTensor(1, S, S)
+			cx := int((0.50 + float64(rng.Intn(11)-5)/100.0) * f)
+			cy := int((0.50 + float64(rng.Intn(11)-5)/100.0) * f)
+			radius := int((0.18 + float64(rng.Intn(9))/100.0) * f)
+			if radius < 2 {
+				radius = 2
+			}
 
 			switch c % 5 {
-			case 0: // Circle / Disk
-				for y := 0; y < 100; y++ {
-					for x := 0; x < 100; x++ {
+			case 0: // Circle / Ring
+				for y := 0; y < S; y++ {
+					for x := 0; x < S; x++ {
 						dx := float64(x - cx)
 						dy := float64(y - cy)
 						dist := math.Sqrt(dx*dx + dy*dy)
-						if math.Abs(dist-float64(radius)) <= 3.0 {
+						if math.Abs(dist-float64(radius)) <= stroke {
 							t.Set(0, y, x, 0.9)
 						}
 					}
@@ -4253,27 +4280,29 @@ func GenerateSyntheticBenchmarkDataset(numClasses int, samplesPerClass int, seed
 				yMin := cy - radius/2
 				yMax := cy + radius/2
 				for y := yMin; y <= yMax; y++ {
-					for x := 20; x < 80; x++ {
-						if y >= 0 && y < 100 {
-							t.Set(0, y, x, 0.9)
-						}
+					if y < 0 || y >= S {
+						continue
+					}
+					for x := lo; x < hi; x++ {
+						t.Set(0, y, x, 0.9)
 					}
 				}
 			case 2: // Vertical stripe
 				xMin := cx - radius/2
 				xMax := cx + radius/2
-				for y := 20; y < 80; y++ {
+				for y := lo; y < hi; y++ {
 					for x := xMin; x <= xMax; x++ {
-						if x >= 0 && x < 100 {
-							t.Set(0, y, x, 0.9)
+						if x < 0 || x >= S {
+							continue
 						}
+						t.Set(0, y, x, 0.9)
 					}
 				}
 			case 3: // Cross / Plus
-				for y := 20; y < 80; y++ {
-					for x := 20; x < 80; x++ {
-						if (math.Abs(float64(x-cx)) <= 4 && math.Abs(float64(y-cy)) <= float64(radius)) ||
-							(math.Abs(float64(y-cy)) <= 4 && math.Abs(float64(x-cx)) <= float64(radius)) {
+				for y := lo; y < hi; y++ {
+					for x := lo; x < hi; x++ {
+						if (math.Abs(float64(x-cx)) <= stroke && math.Abs(float64(y-cy)) <= float64(radius)) ||
+							(math.Abs(float64(y-cy)) <= stroke && math.Abs(float64(x-cx)) <= float64(radius)) {
 							t.Set(0, y, x, 0.9)
 						}
 					}
@@ -4282,7 +4311,7 @@ func GenerateSyntheticBenchmarkDataset(numClasses int, samplesPerClass int, seed
 				for d := -radius; d <= radius; d++ {
 					x := cx + d
 					y := cy + d
-					if x >= 0 && x < 100 && y >= 0 && y < 100 {
+					if x >= 0 && x < S && y >= 0 && y < S {
 						t.Set(0, y, x, 0.9)
 					}
 				}
@@ -4344,7 +4373,7 @@ func RunArchitectureBenchmark(dataDir string, epochs int, batchSize int, lr floa
 				}
 				centered := PadAndCenter(gray, bbox)
 				stretched := ContrastStretch(centered)
-				resized := ResizeBilinear(stretched, 100, 100)
+				resized := ResizeBilinear(stretched, InputSize, InputSize)
 				t := GrayImageToTensor(resized)
 				res = append(res, Sample{Input: t, TargetClass: it.ClassIndex})
 			}
@@ -4721,7 +4750,11 @@ type PredictResponse struct {
 }
 
 // PreprocessWebImage takes an arbitrary decoded image, locates the tight bounding box, centers it with scale-invariant padding,
-// stretches stroke contrast, and resamples to a 100x100 Tensor normalized to [0.0, 1.0].
+// stretches stroke contrast, and resamples to an InputSize x InputSize Tensor normalized to [0.0, 1.0].
+//
+// This must stay byte-for-byte identical to the training pipeline in runTrain; any divergence
+// (resolution, threshold, ordering of the steps) shifts the input distribution away from the one
+// the weights were fitted on and shows up as poor live predictions despite a good val accuracy.
 func PreprocessWebImage(src image.Image) (*Tensor, bool) {
 	bounds := src.Bounds()
 	gray := image.NewGray(bounds)
@@ -4729,12 +4762,12 @@ func PreprocessWebImage(src image.Image) (*Tensor, bool) {
 
 	bbox := FindBoundingBox(gray, 10)
 	if bbox == nil {
-		return NewTensor(1, 100, 100), true
+		return NewTensor(1, InputSize, InputSize), true
 	}
 
 	centered := PadAndCenter(gray, bbox)
 	stretched := ContrastStretch(centered)
-	resized := ResizeBilinear(stretched, 100, 100)
+	resized := ResizeBilinear(stretched, InputSize, InputSize)
 	tensor := GrayImageToTensor(resized)
 	return tensor, false
 }
@@ -5033,7 +5066,7 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 				}
 				centered := PadAndCenter(v, bbox)
 				stretched := ContrastStretch(centered)
-				resized := ResizeBilinear(stretched, 100, 100)
+				resized := ResizeBilinear(stretched, InputSize, InputSize)
 				tensor := GrayImageToTensor(resized)
 				samples = append(samples, Sample{
 					Input:       tensor,
