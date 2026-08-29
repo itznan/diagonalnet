@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
-[![Tests](https://img.shields.io/badge/Tests-21%20Passing-success)](main_test.go)
+[![Tests](https://img.shields.io/badge/Tests-27%20Passing-success)](main_test.go)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](README.md)
 
 > **Pure Go Zero-Dependency Deep Learning Engine, 13-Channel Spatial Difference Manifold Calculus & High-Performance CPU Runtime.**
@@ -62,9 +62,12 @@ flowchart TD
     G --> H[AdaptiveAvgPool2DLayer TargetH x TargetW]
     H --> I[LinearLayer Dense Feedforward]
     I --> J[DropoutLayer Inverted Dropout p=0.2]
-    J --> K[Analytical Jacobian Backpropagation & Adam Optimizer]
-    K --> L[Lock-Free Parallel Gradient Reduction]
-    L --> M[DIAGON01 Binary Model Persistence]
+    J --> K[SoftmaxLayer Probability Distribution]
+    K --> L[CategoricalCrossEntropyLoss Criterion]
+    L --> M[Analytical Softmax Logit Gradient dL/dz = p - y]
+    M --> N[Analytical Jacobian Backpropagation & Adam Optimizer]
+    N --> O[Lock-Free Parallel Gradient Reduction]
+    O --> P[DIAGON01 Binary Model Persistence]
 ```
 
 ### 1. Hardware Topology & Multi-Core Concurrency
@@ -115,6 +118,12 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
   - **ReLU**: Forward $y_i = \max(0, x_i)$, Backward $\frac{\partial L}{\partial x_i} = \frac{\partial L}{\partial y_i} \cdot \mathbf{1}(x_i > 0)$.
   - **LeakyReLU**: Forward $y_i = x_i \text{ if } x_i > 0 \text{ else } \alpha x_i$, Backward $\frac{\partial L}{\partial x_i} = \frac{\partial L}{\partial y_i} \text{ if } x_i > 0 \text{ else } \alpha \frac{\partial L}{\partial y_i}$ ($\alpha = 0.01$).
   - Full support for 1D slices (`Forward`, `Backward`) and 3D Tensors (`ForwardTensor`, `BackwardTensor`).
+- **`SoftmaxLayer` & `Softmax`**:
+  - Numerically stable exponentiation via max-logit subtraction: $m = \max_j z_j$, $e_i = \exp(z_i - m)$, $p_i = \frac{e_i}{\sum_j e_j}$.
+  - Analytical backward Jacobian: $\frac{\partial L}{\partial z_i} = p_i \left( \frac{\partial L}{\partial p_i} - \sum_j \frac{\partial L}{\partial p_j} p_j \right)$.
+- **`CategoricalCrossEntropyLoss`**:
+  - Loss formulation: $\mathcal{L} = -\ln(p_{\text{target}} + \epsilon)$ with $\epsilon = 10^{-15}$.
+  - Composite analytical gradient w.r.t pre-softmax logits: $\frac{\partial \mathcal{L}}{\partial z_i} = p_i - \mathbf{1}(i = \text{target})$.
 - **`AdaptiveAvgPool2DLayer`**:
   - Dynamically pools arbitrary spatial dimensions $[H \times W]$ to a fixed $[TargetH \times TargetW]$ output.
   - Analytical backward pass uniformly distributing gradients across spatial bins.
@@ -166,6 +175,12 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 | `TestLeakyReLUScalar` | Scalar LeakyReLU function and analytical derivative checks | `PASS` |
 | `TestLeakyReLULayerForwardAndBackward` | **Numerical gradient verification** for LeakyReLU layer forward & backward | `PASS` |
 | `TestLeakyReLULayerTensor` | LeakyReLU forward and analytical backward passes on 3D Tensors | `PASS` |
+| `TestSoftmaxBasic` | Standard Softmax probabilities, monotonicity, and unit sum constraint | `PASS` |
+| `TestSoftmaxNumericalStability` | Overflow resilience on extreme logits (no NaNs or Infs) | `PASS` |
+| `TestSoftmaxLayerForwardAndBackward` | **Numerical gradient verification** for Softmax analytical Jacobian | `PASS` |
+| `TestCategoricalCrossEntropyValues` | Cross-Entropy scalar loss evaluation and boundary safety ($\epsilon = 10^{-15}$) | `PASS` |
+| `TestCategoricalCrossEntropyOneHot` | Consistency between one-hot distribution and scalar class index loss | `PASS` |
+| `TestSoftmaxCrossEntropyAnalyticalGradients` | **Numerical gradient verification** for composite Softmax logit gradients | `PASS` |
 
 ---
 

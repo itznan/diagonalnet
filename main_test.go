@@ -893,3 +893,186 @@ func TestLeakyReLULayerTensor(t *testing.T) {
 	}
 }
 
+// 12. Softmax Probability Distribution Unit Tests
+func TestSoftmaxBasic(t *testing.T) {
+	logits := []float32{1.0, 2.0, 3.0}
+	probs := Softmax(logits)
+
+	if len(probs) != len(logits) {
+		t.Fatalf("expected len %d, got %d", len(logits), len(probs))
+	}
+
+	var sum float32
+	for _, p := range probs {
+		if p < 0 || p > 1 {
+			t.Fatalf("probability %f out of range [0, 1]", p)
+		}
+		sum += p
+	}
+
+	if math.Abs(float64(sum-1.0)) > 1e-5 {
+		t.Fatalf("expected probability sum 1.0, got %f", sum)
+	}
+
+	// Verify monotonically increasing probabilities since logits are increasing
+	if !(probs[0] < probs[1] && probs[1] < probs[2]) {
+		t.Fatalf("expected strictly increasing probabilities, got %v", probs)
+	}
+}
+
+func TestSoftmaxNumericalStability(t *testing.T) {
+	// Extreme logits that would cause standard exp() to overflow float32/float64 to +Inf
+	extremeLogits := []float32{1000.0, 1002.0, 1005.0}
+	probs := Softmax(extremeLogits)
+
+	var sum float32
+	for i, p := range probs {
+		if math.IsNaN(float64(p)) || math.IsInf(float64(p), 0) {
+			t.Fatalf("Softmax produced NaN or Inf at index %d: %f", i, p)
+		}
+		if p < 0 || p > 1 {
+			t.Fatalf("probability %f out of bounds", p)
+		}
+		sum += p
+	}
+
+	if math.Abs(float64(sum-1.0)) > 1e-5 {
+		t.Fatalf("expected sum 1.0 on extreme logits, got %f", sum)
+	}
+
+	// Difference between 1000 and 1005 is 5.0, exp(-5) / (exp(-5) + exp(-3) + exp(0))
+	expectedP2 := float32(1.0 / (math.Exp(-5.0) + math.Exp(-3.0) + 1.0))
+	if math.Abs(float64(probs[2]-expectedP2)) > 1e-4 {
+		t.Fatalf("expected p[2] == %f, got %f", expectedP2, probs[2])
+	}
+}
+
+func TestSoftmaxLayerForwardAndBackward(t *testing.T) {
+	softmax := NewSoftmaxLayer()
+	logits := []float32{1.5, 0.2, -0.8, 2.3}
+	target := []float32{0.1, 0.2, 0.0, 0.7}
+
+	probs := softmax.Forward(logits)
+	gradOutput := make([]float32, len(logits))
+	for i := range logits {
+		gradOutput[i] = probs[i] - target[i]
+	}
+
+	anaGrad := softmax.Backward(gradOutput)
+
+	eps := float32(1e-3)
+	for i := range logits {
+		orig := logits[i]
+
+		logits[i] = orig + eps
+		outP := Softmax(logits)
+		var lossP float32
+		for j := range outP {
+			diff := outP[j] - target[j]
+			lossP += 0.5 * diff * diff
+		}
+
+		logits[i] = orig - eps
+		outM := Softmax(logits)
+		var lossM float32
+		for j := range outM {
+			diff := outM[j] - target[j]
+			lossM += 0.5 * diff * diff
+		}
+
+		logits[i] = orig
+		numGrad := (lossP - lossM) / (2.0 * eps)
+
+		if math.Abs(float64(anaGrad[i]-numGrad)) > 1e-2 {
+			t.Fatalf("Softmax numerical gradient mismatch at %d: analytical=%f, numerical=%f", i, anaGrad[i], numGrad)
+		}
+	}
+}
+
+// 13. Categorical Cross-Entropy Loss & Analytical Softmax Derivatives Unit Tests
+func TestCategoricalCrossEntropyValues(t *testing.T) {
+	lossCriterion := NewCategoricalCrossEntropyLoss()
+
+	// Perfect prediction p_target = 1.0 -> Loss ~ 0.0
+	probsPerfect := []float32{0.0, 1.0, 0.0}
+	loss0 := lossCriterion.Forward(probsPerfect, 1)
+	if math.Abs(float64(loss0)) > 1e-4 {
+		t.Fatalf("expected loss ~0.0 for p_target=1.0, got %f", loss0)
+	}
+
+	// p_target = 1/e ~ 0.367879 -> Loss ~ 1.0
+	eInv := float32(math.Exp(-1.0))
+	probsE := []float32{eInv, 1.0 - eInv}
+	loss1 := lossCriterion.Forward(probsE, 0)
+	if math.Abs(float64(loss1-1.0)) > 1e-4 {
+		t.Fatalf("expected loss ~1.0 for p_target=1/e, got %f", loss1)
+	}
+
+	// Zero probability p_target = 0.0 -> Loss finite positive value due to eps=1e-15
+	probsZero := []float32{1.0, 0.0}
+	lossZero := lossCriterion.Forward(probsZero, 1)
+	if math.IsNaN(float64(lossZero)) || math.IsInf(float64(lossZero), 0) || lossZero <= 0 {
+		t.Fatalf("expected finite positive loss for p_target=0, got %f", lossZero)
+	}
+}
+
+func TestCategoricalCrossEntropyOneHot(t *testing.T) {
+	probs := []float32{0.1, 0.7, 0.2}
+	oneHot := []float32{0.0, 1.0, 0.0}
+
+	scalarLoss := CategoricalCrossEntropy(probs, 1)
+	oneHotLoss := CategoricalCrossEntropyOneHot(probs, oneHot)
+
+	if math.Abs(float64(scalarLoss-oneHotLoss)) > 1e-6 {
+		t.Fatalf("mismatch between scalar loss (%f) and one-hot loss (%f)", scalarLoss, oneHotLoss)
+	}
+}
+
+func TestSoftmaxCrossEntropyAnalyticalGradients(t *testing.T) {
+	lossCriterion := NewCategoricalCrossEntropyLoss()
+
+	logits := []float32{2.5, -1.0, 0.5, 3.2, -0.4}
+	targetClass := 3
+
+	loss, probs, anaGrad := lossCriterion.LossAndGrad(logits, targetClass)
+	if loss <= 0 {
+		t.Fatalf("expected positive loss, got %f", loss)
+	}
+
+	// Verify analytical gradient formula: dL/dz_i = p_i - 1(i == target)
+	for i, p := range probs {
+		var expectedGrad float32
+		if i == targetClass {
+			expectedGrad = p - 1.0
+		} else {
+			expectedGrad = p
+		}
+		if math.Abs(float64(anaGrad[i]-expectedGrad)) > 1e-6 {
+			t.Fatalf("analytical gradient formula mismatch at %d: expected %f, got %f", i, expectedGrad, anaGrad[i])
+		}
+	}
+
+	// Verify analytical gradient against finite-difference numerical gradients
+	eps := float32(1e-3)
+	for i := range logits {
+		orig := logits[i]
+
+		logits[i] = orig + eps
+		probsP := Softmax(logits)
+		lossP := lossCriterion.Forward(probsP, targetClass)
+
+		logits[i] = orig - eps
+		probsM := Softmax(logits)
+		lossM := lossCriterion.Forward(probsM, targetClass)
+
+		logits[i] = orig
+		numGrad := (lossP - lossM) / (2.0 * eps)
+
+		if math.Abs(float64(anaGrad[i]-numGrad)) > 1e-2 {
+			t.Fatalf("Softmax-CrossEntropy numerical gradient mismatch at %d: analytical=%f, numerical=%f", i, anaGrad[i], numGrad)
+		}
+	}
+}
+
+
+

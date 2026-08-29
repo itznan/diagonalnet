@@ -1370,6 +1370,216 @@ func (l *LeakyReLULayer) BackwardTensorInto(gradOutput *Tensor, gradInput *Tenso
 	l.BackwardInto(gradOutput.Data, gradInput.Data)
 }
 
+// Softmax computes the numerically stable softmax probability distribution over an arbitrary 1D logits slice:
+// m = max_j(z_j), e_i = exp(z_i - m), p_i = e_i / sum_{j=0}^{K-1} e_j
+func Softmax(logits []float32) []float32 {
+	if len(logits) == 0 {
+		return nil
+	}
+	probs := make([]float32, len(logits))
+	SoftmaxInto(logits, probs)
+	return probs
+}
+
+// SoftmaxInto computes numerically stable softmax into a pre-allocated destination slice.
+func SoftmaxInto(logits []float32, probs []float32) {
+	if len(logits) == 0 {
+		return
+	}
+	maxLogit := logits[0]
+	for _, v := range logits[1:] {
+		if v > maxLogit {
+			maxLogit = v
+		}
+	}
+	var sumExp float32
+	for i, v := range logits {
+		e := float32(math.Exp(float64(v - maxLogit)))
+		probs[i] = e
+		sumExp += e
+	}
+	if sumExp == 0 {
+		sumExp = 1e-12
+	}
+	invSum := 1.0 / sumExp
+	for i := range probs {
+		probs[i] *= invSum
+	}
+}
+
+// SoftmaxGrad computes analytical Jacobian vector product for Softmax:
+// dL/dz_i = p_i * (dL/dp_i - sum_j(dL/dp_j * p_j))
+func SoftmaxGrad(probs []float32, gradOutput []float32) []float32 {
+	gradInput := make([]float32, len(probs))
+	SoftmaxGradInto(probs, gradOutput, gradInput)
+	return gradInput
+}
+
+// SoftmaxGradInto computes Softmax analytical Jacobian gradient into a pre-allocated slice.
+func SoftmaxGradInto(probs []float32, gradOutput []float32, gradInput []float32) {
+	var dot float32
+	for i := range probs {
+		dot += gradOutput[i] * probs[i]
+	}
+	for i := range probs {
+		gradInput[i] = probs[i] * (gradOutput[i] - dot)
+	}
+}
+
+// SoftmaxLayer implements a stateful Softmax probability distribution layer with analytical Jacobian autograd.
+type SoftmaxLayer struct {
+	LastProbs []float32
+}
+
+// NewSoftmaxLayer constructs a new Softmax layer.
+func NewSoftmaxLayer() *SoftmaxLayer {
+	return &SoftmaxLayer{}
+}
+
+// Forward executes the numerically stable Softmax forward pass.
+func (l *SoftmaxLayer) Forward(logits []float32) []float32 {
+	out := make([]float32, len(logits))
+	l.ForwardInto(logits, out)
+	return out
+}
+
+// ForwardInto executes Softmax forward pass into a pre-allocated destination slice.
+func (l *SoftmaxLayer) ForwardInto(logits []float32, output []float32) {
+	if len(l.LastProbs) != len(logits) {
+		l.LastProbs = make([]float32, len(logits))
+	}
+	SoftmaxInto(logits, output)
+	copy(l.LastProbs, output)
+}
+
+// Backward computes analytical Jacobian backpropagation gradient: dL/dz_i = p_i * (dL/dp_i - sum_j(dL/dp_j * p_j)).
+func (l *SoftmaxLayer) Backward(gradOutput []float32) []float32 {
+	gradInput := make([]float32, len(gradOutput))
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto computes Softmax analytical Jacobian backpropagation into pre-allocated gradInput slice.
+func (l *SoftmaxLayer) BackwardInto(gradOutput []float32, gradInput []float32) {
+	SoftmaxGradInto(l.LastProbs, gradOutput, gradInput)
+}
+
+// CategoricalCrossEntropy computes cross-entropy loss for target class index:
+// L = -ln(p_target + eps), eps = 1e-15
+func CategoricalCrossEntropy(probs []float32, targetClass int) float32 {
+	const eps = 1e-15
+	if targetClass < 0 || targetClass >= len(probs) {
+		return 0
+	}
+	p := float64(probs[targetClass])
+	if p < 0 {
+		p = 0
+	}
+	return float32(-math.Log(p + eps))
+}
+
+// CategoricalCrossEntropyOneHot computes loss for one-hot target distribution:
+// L = -sum_{k=0}^{K-1} y_k * ln(p_k + eps)
+func CategoricalCrossEntropyOneHot(probs []float32, targetOneHot []float32) float32 {
+	const eps = 1e-15
+	var totalLoss float64
+	for i, y := range targetOneHot {
+		if y > 0 && i < len(probs) {
+			p := float64(probs[i])
+			if p < 0 {
+				p = 0
+			}
+			totalLoss -= float64(y) * math.Log(p+eps)
+		}
+	}
+	return float32(totalLoss)
+}
+
+// SoftmaxCrossEntropyGrad computes analytical pre-softmax logit gradients:
+// dL/dz_i = p_i - 1(i == target)
+func SoftmaxCrossEntropyGrad(probs []float32, targetClass int) []float32 {
+	grad := make([]float32, len(probs))
+	SoftmaxCrossEntropyGradInto(probs, targetClass, grad)
+	return grad
+}
+
+// SoftmaxCrossEntropyGradInto computes analytical pre-softmax logit gradients into a pre-allocated slice:
+// dL/dz_i = p_i - 1(i == target)
+func SoftmaxCrossEntropyGradInto(probs []float32, targetClass int, gradLogits []float32) {
+	for i, p := range probs {
+		if i == targetClass {
+			gradLogits[i] = p - 1.0
+		} else {
+			gradLogits[i] = p
+		}
+	}
+}
+
+// SoftmaxCrossEntropyGradOneHotInto computes analytical gradients for soft/one-hot distributions:
+// dL/dz_i = p_i - y_i
+func SoftmaxCrossEntropyGradOneHotInto(probs []float32, targetOneHot []float32, gradLogits []float32) {
+	for i, p := range probs {
+		if i < len(targetOneHot) {
+			gradLogits[i] = p - targetOneHot[i]
+		} else {
+			gradLogits[i] = p
+		}
+	}
+}
+
+// CategoricalCrossEntropyLoss implements the Categorical Cross-Entropy loss criterion
+// with analytical gradients with respect to pre-softmax logits.
+// Loss:              L = -ln(p_target + eps)
+// Logit Derivative:  dL/dz_i = p_i - 1(i == target)
+type CategoricalCrossEntropyLoss struct {
+	Eps float64
+}
+
+// NewCategoricalCrossEntropyLoss constructs a new Categorical Cross-Entropy loss criterion.
+func NewCategoricalCrossEntropyLoss() *CategoricalCrossEntropyLoss {
+	return &CategoricalCrossEntropyLoss{
+		Eps: 1e-15,
+	}
+}
+
+// Forward computes loss given predicted class probabilities and target class label: L = -ln(p_target + eps)
+func (c *CategoricalCrossEntropyLoss) Forward(probs []float32, targetClass int) float32 {
+	if targetClass < 0 || targetClass >= len(probs) {
+		return 0
+	}
+	p := float64(probs[targetClass])
+	if p < 0 {
+		p = 0
+	}
+	return float32(-math.Log(p + c.Eps))
+}
+
+// Backward computes analytical gradient of loss w.r.t pre-softmax logits: dL/dz_i = p_i - 1(i == target)
+func (c *CategoricalCrossEntropyLoss) Backward(probs []float32, targetClass int) []float32 {
+	return SoftmaxCrossEntropyGrad(probs, targetClass)
+}
+
+// BackwardInto computes analytical gradient of loss w.r.t pre-softmax logits into a pre-allocated buffer.
+func (c *CategoricalCrossEntropyLoss) BackwardInto(probs []float32, targetClass int, gradLogits []float32) {
+	SoftmaxCrossEntropyGradInto(probs, targetClass, gradLogits)
+}
+
+// LossAndGrad computes both the loss scalar and the analytical pre-softmax logit gradients in a single pass.
+func (c *CategoricalCrossEntropyLoss) LossAndGrad(logits []float32, targetClass int) (float32, []float32, []float32) {
+	probs := Softmax(logits)
+	loss := c.Forward(probs, targetClass)
+	grad := c.Backward(probs, targetClass)
+	return loss, probs, grad
+}
+
+// LossAndGradInto computes loss, probabilities, and logit gradients into pre-allocated slices.
+func (c *CategoricalCrossEntropyLoss) LossAndGradInto(logits []float32, targetClass int, probs []float32, gradLogits []float32) float32 {
+	SoftmaxInto(logits, probs)
+	loss := c.Forward(probs, targetClass)
+	c.BackwardInto(probs, targetClass, gradLogits)
+	return loss
+}
+
 // ============================================================================
 // 8. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
