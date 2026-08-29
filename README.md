@@ -322,6 +322,7 @@ C:\diagonalnet\
 ├── Makefile                # Cross-platform single-command build & test runner
 ├── README.md               # Architecture documentation, formulas, and user guide
 ├── STDLIB.md               # Standard library replacements & zero-dep rationale
+├── TRAINING_HISTORY.md     # Comprehensive training run comparisons, metrics & history
 ├── deps-proof.txt          # Proof log demonstrating zero third-party dependencies
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI
