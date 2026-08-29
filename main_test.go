@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"math"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -1975,6 +1981,488 @@ func TestShearMorphologyAndAugmentImage(t *testing.T) {
 		}
 	}
 }
+
+// 26. DiagonNet Full Model Forward & Analytical Backward Unit Tests (Prompt 41)
+func TestDiagonNetModelForwardBackward(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	model := NewDiagonNetModel(3, rng)
+	model.SetTraining(false)
+
+	// Create sample 1-channel 100x100 tensor
+	input := NewTensor(1, 100, 100)
+	for y := 30; y < 70; y++ {
+		for x := 30; x < 70; x++ {
+			input.Set(0, y, x, 0.8)
+		}
+	}
+
+	// Forward pass
+	logits := model.Forward(input)
+	if len(logits) != 3 {
+		t.Fatalf("expected 3 logits for 3 classes, got %d", len(logits))
+	}
+	probs := Softmax(logits)
+	var sumP float32
+	for _, p := range probs {
+		sumP += p
+	}
+	if math.Abs(float64(sumP-1.0)) > 1e-4 {
+		t.Fatalf("expected Softmax probabilities to sum to 1.0, got %f", sumP)
+	}
+
+	// ForwardBackward pass
+	model.SetTraining(true)
+	model.ZeroGrad()
+	loss, probsBW := model.ForwardBackward(input, 1)
+	if loss <= 0 {
+		t.Fatalf("expected positive cross entropy loss, got %f", loss)
+	}
+	if len(probsBW) != 3 {
+		t.Fatalf("expected 3 probabilities, got %d", len(probsBW))
+	}
+
+	// Verify gradients were accumulated in parameters
+	for idx, p := range model.Parameters() {
+		hasGrad := false
+		for _, g := range p.Grad {
+			if g != 0 {
+				hasGrad = true
+				break
+			}
+		}
+		if !hasGrad {
+			t.Fatalf("expected non-zero analytical gradients in parameter %d", idx)
+		}
+	}
+}
+
+// 27. BatchTrainer Data-Parallel Worker Replicas & Master Reduction Unit Tests (Prompts 41 & 42)
+func TestBatchTrainerDataParallelTraining(t *testing.T) {
+	rng := rand.New(rand.NewSource(123))
+	master := NewDiagonNetModel(2, rng)
+
+	optConfig := DefaultAdamConfig()
+	optConfig.LearningRate = 0.01
+	opt := NewAdamOptimizer(master.Parameters(), optConfig)
+
+	numWorkers := 4
+	trainer := NewBatchTrainer(master, opt, numWorkers)
+
+	if len(trainer.Workers) != numWorkers {
+		t.Fatalf("expected %d workers, got %d", numWorkers, len(trainer.Workers))
+	}
+
+	// Create a synthetic batch of 8 samples (4 of class 0, 4 of class 1)
+	batch := make([]Sample, 8)
+	for i := 0; i < 8; i++ {
+		tensor := NewTensor(1, 100, 100)
+		target := i % 2
+		// Distinct spatial signatures for each class
+		if target == 0 {
+			for y := 20; y < 40; y++ {
+				for x := 20; x < 80; x++ {
+					tensor.Set(0, y, x, 0.9)
+				}
+			}
+		} else {
+			for y := 20; y < 80; y++ {
+				for x := 40; x < 60; x++ {
+					tensor.Set(0, y, x, 0.9)
+				}
+			}
+		}
+		batch[i] = Sample{Input: tensor, TargetClass: target}
+	}
+
+	// Train 5 batches and track loss
+	initialLoss, _ := trainer.TrainBatch(batch)
+	if initialLoss <= 0 {
+		t.Fatalf("expected positive initial loss, got %f", initialLoss)
+	}
+
+	for epoch := 0; epoch < 4; epoch++ {
+		trainer.TrainBatch(batch)
+	}
+
+	// Evaluate on dataset
+	valLoss, valAcc := trainer.Evaluate(batch)
+	if valLoss <= 0 {
+		t.Fatalf("expected positive validation loss, got %f", valLoss)
+	}
+	if valAcc < 0 || valAcc > 1.0 {
+		t.Fatalf("invalid accuracy: %f", valAcc)
+	}
+}
+
+// 28. Best-Model Validation Accuracy Checkpointing & Weight Restoration Unit Tests (Prompt 43)
+func TestModelCheckpointBestAccuracyAndRestoration(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	model := NewDiagonNetModel(2, rng)
+	cp := NewModelCheckpoint()
+
+	if cp.BestValAcc != -1.0 || cp.BestEpoch != -1 {
+		t.Fatalf("initial checkpoint state mismatch: acc=%f, epoch=%d", cp.BestValAcc, cp.BestEpoch)
+	}
+
+	// Epoch 1: valAcc = 0.60
+	model.FC.Biases.Data[0] = 1.0
+	updated1 := cp.Update(model, 1, 0.60)
+	if !updated1 || cp.BestEpoch != 1 || math.Abs(cp.BestValAcc-0.60) > 1e-6 {
+		t.Fatalf("epoch 1 checkpoint update failed")
+	}
+
+	// Epoch 2: valAcc = 0.85 (Better)
+	model.FC.Biases.Data[0] = 2.5
+	updated2 := cp.Update(model, 2, 0.85)
+	if !updated2 || cp.BestEpoch != 2 || math.Abs(cp.BestValAcc-0.85) > 1e-6 {
+		t.Fatalf("epoch 2 checkpoint update failed")
+	}
+
+	// Epoch 3: valAcc = 0.70 (Worse / Overfitting)
+	model.FC.Biases.Data[0] = -5.0
+	updated3 := cp.Update(model, 3, 0.70)
+	if updated3 {
+		t.Fatalf("epoch 3 should not have updated checkpoint with worse accuracy")
+	}
+	if cp.BestEpoch != 2 {
+		t.Fatalf("checkpoint best epoch should remain 2, got %d", cp.BestEpoch)
+	}
+
+	// Restore best weights
+	cp.RestoreBest(model)
+	if math.Abs(float64(model.FC.Biases.Data[0]-2.5)) > 1e-6 {
+		t.Fatalf("restored weights mismatch: expected 2.5, got %f", model.FC.Biases.Data[0])
+	}
+}
+
+// 29. Comprehensive Multi-Class Classification Evaluation Metrics Unit Tests (Prompt 44)
+func TestMultiClassEvaluationMetrics(t *testing.T) {
+	rng := rand.New(rand.NewSource(99))
+	model := NewDiagonNetModel(3, rng)
+
+	classes := []string{"circle", "square", "triangle"}
+	samples := make([]Sample, 12)
+
+	for i := 0; i < 12; i++ {
+		tensor := NewTensor(1, 100, 100)
+		target := i % 3
+		// Fill synthetic feature mark
+		tensor.Set(0, 50, 50, float32(target+1)*0.3)
+		samples[i] = Sample{Input: tensor, TargetClass: target}
+	}
+
+	report := ComputeEvaluationMetrics(model, samples, classes)
+
+	if report.NumClasses != 3 {
+		t.Fatalf("expected 3 classes, got %d", report.NumClasses)
+	}
+	if report.TotalSamples != 12 {
+		t.Fatalf("expected 12 total samples, got %d", report.TotalSamples)
+	}
+	if report.Accuracy < 0 || report.Accuracy > 1.0 {
+		t.Fatalf("invalid accuracy: %f", report.Accuracy)
+	}
+	if report.MacroF1 < 0 || report.MacroF1 > 1.0 {
+		t.Fatalf("invalid Macro-F1: %f", report.MacroF1)
+	}
+
+	// Verify per-class formulas
+	for c := 0; c < 3; c++ {
+		cm := report.ClassMetrics[c]
+		if cm.ClassName != classes[c] {
+			t.Fatalf("class name mismatch at %d: %s", c, cm.ClassName)
+		}
+		if cm.TP+cm.FN != cm.Support {
+			t.Fatalf("support mismatch for class %s: TP=%d, FN=%d, Support=%d", cm.ClassName, cm.TP, cm.FN, cm.Support)
+		}
+		if cm.TP+cm.FP > 0 {
+			expectedPrec := float64(cm.TP) / float64(cm.TP+cm.FP)
+			if math.Abs(cm.Precision-expectedPrec) > 1e-6 {
+				t.Fatalf("precision formula mismatch: got %f, expected %f", cm.Precision, expectedPrec)
+			}
+		}
+		if cm.TP+cm.FN > 0 {
+			expectedRec := float64(cm.TP) / float64(cm.TP+cm.FN)
+			if math.Abs(cm.Recall-expectedRec) > 1e-6 {
+				t.Fatalf("recall formula mismatch: got %f, expected %f", cm.Recall, expectedRec)
+			}
+		}
+	}
+
+	// Print test table to stdout
+	PrintEvaluationReport(report)
+}
+
+// 30. Baseline SimpleCNN Forward & Analytical Backpropagation Unit Tests (Prompt 45)
+func TestSimpleCNNModelForwardBackward(t *testing.T) {
+	rng := rand.New(rand.NewSource(101))
+	model := NewSimpleCNNModel(3, rng)
+
+	input := NewTensor(1, 100, 100)
+	for y := 30; y < 70; y++ {
+		for x := 30; x < 70; x++ {
+			input.Set(0, y, x, 0.8)
+		}
+	}
+
+	// 1. Forward Pass
+	logits := model.Forward(input)
+	if len(logits) != 3 {
+		t.Fatalf("expected 3 logits, got %d", len(logits))
+	}
+
+	// 2. Analytical Forward & Backward Pass
+	target := 1
+	loss, probs := model.ForwardBackward(input, target)
+	if loss <= 0 {
+		t.Fatalf("expected positive loss, got %f", loss)
+	}
+	if len(probs) != 3 {
+		t.Fatalf("expected 3 probabilities, got %d", len(probs))
+	}
+
+	// Check non-zero gradients in parameter buffers
+	params := model.Parameters()
+	if len(params) != 4 {
+		t.Fatalf("expected 4 parameter buffers (ConvW, ConvB, FCW, FCB), got %d", len(params))
+	}
+	for i, p := range params {
+		var maxGrad float32
+		for _, g := range p.Grad {
+			if float32(math.Abs(float64(g))) > maxGrad {
+				maxGrad = float32(math.Abs(float64(g)))
+			}
+		}
+		if maxGrad <= 1e-9 {
+			t.Fatalf("param buffer %d received zero gradients", i)
+		}
+	}
+}
+
+// 31. Baseline SimpleMLP Forward & Analytical Backpropagation Unit Tests (Prompt 45)
+func TestSimpleMLPModelForwardBackward(t *testing.T) {
+	rng := rand.New(rand.NewSource(202))
+	model := NewSimpleMLPModel(4, rng)
+
+	input := NewTensor(1, 100, 100)
+	for y := 20; y < 80; y++ {
+		input.Set(0, y, 50, 1.0)
+	}
+
+	// 1. Forward Pass
+	logits := model.Forward(input)
+	if len(logits) != 4 {
+		t.Fatalf("expected 4 logits, got %d", len(logits))
+	}
+
+	// 2. Analytical Forward & Backward Pass
+	target := 2
+	loss, probs := model.ForwardBackward(input, target)
+	if loss <= 0 {
+		t.Fatalf("expected positive loss, got %f", loss)
+	}
+	if len(probs) != 4 {
+		t.Fatalf("expected 4 probabilities, got %d", len(probs))
+	}
+
+	// Check non-zero gradients in parameter buffers
+	params := model.Parameters()
+	if len(params) != 4 {
+		t.Fatalf("expected 4 parameter buffers (FC1W, FC1B, FC2W, FC2B), got %d", len(params))
+	}
+	for i, p := range params {
+		var maxGrad float32
+		for _, g := range p.Grad {
+			if float32(math.Abs(float64(g))) > maxGrad {
+				maxGrad = float32(math.Abs(float64(g)))
+			}
+		}
+		if maxGrad <= 1e-9 {
+			t.Fatalf("param buffer %d received zero gradients", i)
+		}
+	}
+}
+
+// 32. Architecture Benchmark Runner & CSV Export Verification (Prompt 45)
+func TestRunArchitectureBenchmarkAndCSVExport(t *testing.T) {
+	tempDir := t.TempDir()
+	csvPath := filepath.Join(tempDir, "benchmark_test_results.csv")
+
+	results, err := RunArchitectureBenchmark("", 3, 16, 0.005, csvPath)
+	if err != nil {
+		t.Fatalf("benchmark failed: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("expected 3 architecture benchmark results, got %d", len(results))
+	}
+
+	// Verify model names and metrics
+	expectedArchs := []string{"DiagonNet (13-Ch)", "SimpleCNN (1-Ch)", "SimpleMLP (Dense)"}
+	for i, expected := range expectedArchs {
+		if results[i].Architecture != expected {
+			t.Fatalf("arch mismatch at %d: expected %s, got %s", i, expected, results[i].Architecture)
+		}
+		if results[i].ParamCount <= 0 {
+			t.Fatalf("invalid parameter count for %s: %d", expected, results[i].ParamCount)
+		}
+		if results[i].TrainTimeMs < 0 {
+			t.Fatalf("invalid training time for %s: %d", expected, results[i].TrainTimeMs)
+		}
+		if results[i].ValAccuracy < 0 || results[i].ValAccuracy > 1.0 {
+			t.Fatalf("invalid validation accuracy for %s: %f", expected, results[i].ValAccuracy)
+		}
+	}
+
+	// Verify CSV file exists and contains valid content
+	content, err := os.ReadFile(csvPath)
+	if err != nil {
+		t.Fatalf("failed to read exported CSV file: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	if len(lines) != 4 { // 1 header + 3 rows
+		t.Fatalf("expected 4 lines in benchmark CSV, got %d:\n%s", len(lines), string(content))
+	}
+	if !strings.HasPrefix(lines[0], "Architecture,Parameters") {
+		t.Fatalf("unexpected CSV header: %s", lines[0])
+	}
+}
+
+// 33. Embedded HTML5 Web Application Content Verification (Prompt 46)
+func TestEmbeddedWebAppHTML(t *testing.T) {
+	if len(webAppHTML) < 500 {
+		t.Fatalf("expected substantial embedded webAppHTML, got %d bytes", len(webAppHTML))
+	}
+	requiredSubstrings := []string{
+		`<!DOCTYPE html>`,
+		`<canvas id="paintCanvas" width="400" height="400">`,
+		`btnClear`,
+		`btnPredict`,
+		`topClass`,
+		`topConfidence`,
+		`latencyBadge`,
+		`classList`,
+		`/api/predict`,
+		`/api/info`,
+	}
+	for _, sub := range requiredSubstrings {
+		if !strings.Contains(webAppHTML, sub) {
+			t.Fatalf("webAppHTML missing essential substring: %q", sub)
+		}
+	}
+}
+
+// 34. Web Image Preprocessing Pipeline Verification (Prompt 47)
+func TestPreprocessWebImagePipeline(t *testing.T) {
+	// 1. Valid Drawing (200x200 square drawn in center of 400x400 canvas)
+	img := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	for y := 100; y < 300; y++ {
+		for x := 100; x < 300; x++ {
+			img.Set(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+
+	tensor, isBlank := PreprocessWebImage(img)
+	if isBlank {
+		t.Fatalf("expected valid non-blank image, got isBlank=true")
+	}
+	if tensor.Channels != 1 || tensor.Height != 100 || tensor.Width != 100 {
+		t.Fatalf("expected preprocessed tensor [1, 100, 100], got [%d, %d, %d]",
+			tensor.Channels, tensor.Height, tensor.Width)
+	}
+
+	// 2. Blank Image (all black)
+	blankImg := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	blankTensor, isBlank := PreprocessWebImage(blankImg)
+	if !isBlank {
+		t.Fatalf("expected isBlank=true for all-black canvas")
+	}
+	if blankTensor.Channels != 1 || blankTensor.Height != 100 || blankTensor.Width != 100 {
+		t.Fatalf("expected blank tensor [1, 100, 100], got [%d, %d, %d]",
+			blankTensor.Channels, blankTensor.Height, blankTensor.Width)
+	}
+}
+
+// 35. HTTP Inference Server Routes, /api/info & /api/predict (Prompt 47 & 48)
+func TestInferenceServerHTTPRoutesAndPredict(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	classes := []string{"circle", "square", "triangle"}
+	model := NewDiagonNetModel(len(classes), rng)
+	server := NewInferenceServer(model, classes, 8081)
+
+	// 1. Test GET / (HTML Application)
+	reqRoot := httptest.NewRequest(http.MethodGet, "/", nil)
+	recRoot := httptest.NewRecorder()
+	server.ServeHTTP(recRoot, reqRoot)
+
+	if recRoot.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for /, got %d", recRoot.Code)
+	}
+	if !strings.Contains(recRoot.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("expected text/html Content-Type, got %s", recRoot.Header().Get("Content-Type"))
+	}
+
+	// 2. Test GET /api/info (Metadata)
+	reqInfo := httptest.NewRequest(http.MethodGet, "/api/info", nil)
+	recInfo := httptest.NewRecorder()
+	server.ServeHTTP(recInfo, reqInfo)
+
+	if recInfo.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for /api/info, got %d", recInfo.Code)
+	}
+	var infoMap map[string]interface{}
+	if err := json.NewDecoder(recInfo.Body).Decode(&infoMap); err != nil {
+		t.Fatalf("failed to decode /api/info JSON: %v", err)
+	}
+	if int(infoMap["num_classes"].(float64)) != 3 {
+		t.Fatalf("expected 3 num_classes in /api/info, got %v", infoMap["num_classes"])
+	}
+
+	// 3. Test POST /api/predict (Synthetic PNG Base64 Drawing)
+	drawImg := image.NewRGBA(image.Rect(0, 0, 400, 400))
+	for y := 150; y < 250; y++ {
+		for x := 150; x < 250; x++ {
+			drawImg.Set(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, drawImg); err != nil {
+		t.Fatalf("failed to encode synthetic PNG: %v", err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+
+	payload, _ := json.Marshal(PredictRequest{Image: dataURL})
+	reqPredict := httptest.NewRequest(http.MethodPost, "/api/predict", bytes.NewReader(payload))
+	recPredict := httptest.NewRecorder()
+	server.ServeHTTP(recPredict, reqPredict)
+
+	if recPredict.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for /api/predict, got %d: %s", recPredict.Code, recPredict.Body.String())
+	}
+
+	var predResp PredictResponse
+	if err := json.NewDecoder(recPredict.Body).Decode(&predResp); err != nil {
+		t.Fatalf("failed to decode /api/predict JSON: %v", err)
+	}
+
+	if predResp.PredictedClass == "" {
+		t.Fatalf("expected non-empty PredictedClass")
+	}
+	if len(predResp.Confidences) != 3 {
+		t.Fatalf("expected 3 class confidences, got %d", len(predResp.Confidences))
+	}
+	if predResp.LatencyMs < 0 {
+		t.Fatalf("expected positive latency, got %f", predResp.LatencyMs)
+	}
+	if predResp.IsBlank {
+		t.Fatalf("expected isBlank=false for drawn square")
+	}
+}
+
+
+
+
 
 
 

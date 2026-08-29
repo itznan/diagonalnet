@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -15,12 +17,15 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ============================================================================
@@ -3091,7 +3096,1666 @@ func (c *CategoricalCrossEntropyLoss) LossAndGradInto(logits []float32, targetCl
 }
 
 // ============================================================================
-// 8. CLI ROUTING & EXECUTION HANDLERS
+// 8. END-TO-END MODEL ARCHITECTURE & MULTI-CORE BATCH TRAINER (Prompts 41 & 42)
+// ============================================================================
+
+// Sample encapsulates an input feature tensor and integer class target.
+type Sample struct {
+	Input       *Tensor // [1 x H x W] or [13 x H x W]
+	TargetClass int     // Integer label in [0, K-1]
+}
+
+// DiagonNetModel represents the complete neural network architecture for DiagonNet:
+// 13-Channel Manifold -> Conv2D (13->16, K=3, S=2, P=1) -> ReLU -> AdaptiveAvgPool (4x4) -> Dropout (p=0.2) -> Linear (256->K)
+type DiagonNetModel struct {
+	NumClasses int
+	Conv       *Conv2DLayer
+	ReLU       *ReLULayer
+	Pool       *AdaptiveAvgPool2DLayer
+	Dropout    *DropoutLayer
+	FC         *LinearLayer
+	LossFn     *CategoricalCrossEntropyLoss
+}
+
+// NewDiagonNetModel constructs a DiagonNet classification model configured dynamically for K classes.
+func NewDiagonNetModel(numClasses int, rng *rand.Rand) *DiagonNetModel {
+	if numClasses < 2 {
+		numClasses = 2
+	}
+	if rng == nil {
+		rng = rand.New(rand.NewSource(42))
+	}
+
+	convRNG := rand.New(rand.NewSource(rng.Int63()))
+	fcRNG := rand.New(rand.NewSource(rng.Int63()))
+	dropRNG := rand.New(rand.NewSource(rng.Int63()))
+
+	conv := NewConv2DLayer(13, 16, 3, 2, 1, convRNG)
+	relu := NewReLULayer()
+	pool := NewAdaptiveAvgPool2DLayer(4, 4)
+	dropout := NewDropoutLayer(0.2, dropRNG)
+	fc := NewLinearLayer(16*4*4, numClasses, fcRNG)
+	lossFn := NewCategoricalCrossEntropyLoss()
+
+	return &DiagonNetModel{
+		NumClasses: numClasses,
+		Conv:       conv,
+		ReLU:       relu,
+		Pool:       pool,
+		Dropout:    dropout,
+		FC:         fc,
+		LossFn:     lossFn,
+	}
+}
+
+// Parameters returns all trainable parameter buffers in the model.
+func (m *DiagonNetModel) Parameters() []*Parameter {
+	return []*Parameter{
+		m.Conv.Weights,
+		m.Conv.Bias,
+		m.FC.Weights,
+		m.FC.Biases,
+	}
+}
+
+// ZeroGrad resets analytical Jacobian gradient buffers for all parameters to zero.
+func (m *DiagonNetModel) ZeroGrad() {
+	for _, p := range m.Parameters() {
+		p.ZeroGrad()
+	}
+}
+
+// SetTraining toggles training vs evaluation mode (affecting Dropout regularization).
+func (m *DiagonNetModel) SetTraining(training bool) {
+	m.Dropout.Training = training
+}
+
+// CloneForWorker constructs an isolated model replica for a parallel batch worker,
+// with independent gradient and layer state buffers.
+func (m *DiagonNetModel) CloneForWorker(workerID int) *DiagonNetModel {
+	rng := rand.New(rand.NewSource(int64(1000 + workerID*37)))
+	replica := &DiagonNetModel{
+		NumClasses: m.NumClasses,
+		Conv: &Conv2DLayer{
+			InChannels:  m.Conv.InChannels,
+			OutChannels: m.Conv.OutChannels,
+			KernelSize:  m.Conv.KernelSize,
+			Stride:      m.Conv.Stride,
+			Padding:     m.Conv.Padding,
+			Weights:     NewParameter(m.Conv.Weights.Size()),
+			Bias:        NewParameter(m.Conv.Bias.Size()),
+		},
+		ReLU:    NewReLULayer(),
+		Pool:    NewAdaptiveAvgPool2DLayer(m.Pool.TargetH, m.Pool.TargetW),
+		Dropout: NewDropoutLayer(m.Dropout.DropRate, rng),
+		FC: &LinearLayer{
+			Weights:   NewParameter(m.FC.Weights.Size()),
+			Biases:    NewParameter(m.FC.Biases.Size()),
+			InputDim:  m.FC.InputDim,
+			OutputDim: m.FC.OutputDim,
+		},
+		LossFn: NewCategoricalCrossEntropyLoss(),
+	}
+	replica.SyncWeightsFrom(m)
+	return replica
+}
+
+// SyncWeightsFrom copies trainable weight vectors from the master model into the replica.
+func (m *DiagonNetModel) SyncWeightsFrom(master *DiagonNetModel) {
+	copy(m.Conv.Weights.Data, master.Conv.Weights.Data)
+	copy(m.Conv.Bias.Data, master.Conv.Bias.Data)
+	copy(m.FC.Weights.Data, master.FC.Weights.Data)
+	copy(m.FC.Biases.Data, master.FC.Biases.Data)
+}
+
+// SnapshotWeights creates deep copies of all trainable parameter weights in the model.
+func (m *DiagonNetModel) SnapshotWeights() [][]float32 {
+	params := m.Parameters()
+	snapshot := make([][]float32, len(params))
+	for i, p := range params {
+		if p != nil {
+			snapshot[i] = make([]float32, len(p.Data))
+			copy(snapshot[i], p.Data)
+		}
+	}
+	return snapshot
+}
+
+// RestoreWeights restores trainable parameter weights from a saved snapshot.
+func (m *DiagonNetModel) RestoreWeights(snapshot [][]float32) {
+	params := m.Parameters()
+	for i, p := range params {
+		if p != nil && i < len(snapshot) && snapshot[i] != nil {
+			copy(p.Data, snapshot[i])
+		}
+	}
+}
+
+// Forward executes the full model inference forward pass, returning unnormalized class logits.
+func (m *DiagonNetModel) Forward(input *Tensor) []float32 {
+	var manifold *Tensor
+	if input.Channels == 1 {
+		manifold = ComputeManifoldTensor(input)
+	} else {
+		manifold = input
+	}
+
+	convOut := m.Conv.Forward(manifold)
+	reluOut := m.ReLU.ForwardTensor(convOut)
+	poolOut := m.Pool.Forward(reluOut)
+	dropOut := m.Dropout.Forward(poolOut.Data)
+	logits := m.FC.Forward(dropOut)
+	return logits
+}
+
+// ForwardBackward executes forward evaluation, cross-entropy loss computation, and full analytical Jacobian
+// backpropagation through all layers, accumulating gradients into parameter buffers.
+func (m *DiagonNetModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
+	var manifold *Tensor
+	if input.Channels == 1 {
+		manifold = ComputeManifoldTensor(input)
+	} else {
+		manifold = input
+	}
+
+	// 1. Forward Pass
+	convOut := m.Conv.Forward(manifold)
+	reluOut := m.ReLU.ForwardTensor(convOut)
+	poolOut := m.Pool.Forward(reluOut)
+	dropOut := m.Dropout.Forward(poolOut.Data)
+	logits := m.FC.Forward(dropOut)
+
+	// 2. Numerically stable Softmax & Categorical Cross-Entropy Loss
+	probs := Softmax(logits)
+	loss := m.LossFn.Forward(probs, targetClass)
+
+	// 3. Analytical pre-softmax logit gradient: dL/dz_i = p_i - 1(i == target)
+	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
+
+	// 4. Dense Head Analytical Backpropagation
+	gradDrop := m.FC.Backward(gradLogits)
+
+	// 5. Inverted Dropout Analytical Backpropagation
+	gradPool := m.Dropout.Backward(gradDrop)
+
+	// 6. Adaptive Average Pooling Analytical Backpropagation
+	poolGradTensor := &Tensor{
+		Data:     gradPool,
+		Channels: m.Conv.OutChannels,
+		Height:   m.Pool.TargetH,
+		Width:    m.Pool.TargetW,
+	}
+	gradReLU := m.Pool.Backward(poolGradTensor)
+
+	// 7. ReLU Activation Analytical Backpropagation
+	gradConv := m.ReLU.BackwardTensor(gradReLU)
+
+	// 8. 2D Convolution Analytical Backpropagation (dL/dW, dL/dB, dL/dX)
+	m.Conv.Backward(gradConv)
+
+	return loss, probs
+}
+
+// BatchTrainer coordinates multi-threaded data-parallel batch training across N worker model replicas.
+type BatchTrainer struct {
+	MasterModel *DiagonNetModel
+	Optimizer   *AdamOptimizer
+	NumWorkers  int
+	Workers     []*DiagonNetModel
+}
+
+// NewBatchTrainer constructs a BatchTrainer coordinating N worker model replicas (scaled to runtime.NumCPU()).
+func NewBatchTrainer(master *DiagonNetModel, optimizer *AdamOptimizer, numWorkers int) *BatchTrainer {
+	if numWorkers <= 0 {
+		numWorkers = runtime.NumCPU()
+		if numWorkers <= 0 {
+			numWorkers = 1
+		}
+	}
+
+	workers := make([]*DiagonNetModel, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		workers[i] = master.CloneForWorker(i)
+	}
+
+	return &BatchTrainer{
+		MasterModel: master,
+		Optimizer:   optimizer,
+		NumWorkers:  numWorkers,
+		Workers:     workers,
+	}
+}
+
+// TrainBatch executes concurrent data-parallel batch training across N worker replicas:
+// 1. Synchronizes master weights to worker replicas.
+// 2. Chunks batch into N slices of size ceil(B / N).
+// 3. Concurrently computes forward, loss, and analytical backward passes on worker replicas.
+// 4. Sums worker gradients into Master parameters in parallel using lock-free chunk reduction.
+// 5. Scales gradients by 1 / len(batch).
+// 6. Executes Adam optimizer step.
+func (bt *BatchTrainer) TrainBatch(batch []Sample) (float32, float32) {
+	B := len(batch)
+	if B == 0 {
+		return 0, 0
+	}
+
+	bt.MasterModel.SetTraining(true)
+
+	// 1. Sync weights and zero worker gradients
+	for _, w := range bt.Workers {
+		w.SyncWeightsFrom(bt.MasterModel)
+		w.ZeroGrad()
+		w.SetTraining(true)
+	}
+
+	// 2. Split batch into N chunks
+	N := bt.NumWorkers
+	if N > B {
+		N = B
+	}
+	chunkSize := (B + N - 1) / N
+
+	var wg sync.WaitGroup
+	losses := make([]float32, N)
+	correctCounts := make([]int, N)
+
+	for w := 0; w < N; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > B {
+			end = B
+		}
+		if start >= end {
+			continue
+		}
+
+		wg.Add(1)
+		go func(workerIdx, s, e int) {
+			defer wg.Done()
+			worker := bt.Workers[workerIdx]
+			var localLoss float32
+			var localCorrect int
+
+			for i := s; i < e; i++ {
+				loss, probs := worker.ForwardBackward(batch[i].Input, batch[i].TargetClass)
+				localLoss += loss
+
+				// Determine predicted class
+				predClass := 0
+				maxP := probs[0]
+				for k := 1; k < len(probs); k++ {
+					if probs[k] > maxP {
+						maxP = probs[k]
+						predClass = k
+					}
+				}
+				if predClass == batch[i].TargetClass {
+					localCorrect++
+				}
+			}
+
+			losses[workerIdx] = localLoss
+			correctCounts[workerIdx] = localCorrect
+		}(w, start, end)
+	}
+
+	// 1. Wait for all workers to finish with sync.WaitGroup
+	wg.Wait()
+
+	// Compute total loss and accuracy
+	var totalLoss float32
+	var totalCorrect int
+	for w := 0; w < N; w++ {
+		totalLoss += losses[w]
+		totalCorrect += correctCounts[w]
+	}
+	avgLoss := totalLoss / float32(B)
+	accuracy := float32(totalCorrect) / float32(B)
+
+	// 2. Accumulate worker parameter gradients into Master parameters in parallel
+	masterParams := bt.MasterModel.Parameters()
+	workerParams := make([][]*Parameter, N)
+	for w := 0; w < N; w++ {
+		workerParams[w] = bt.Workers[w].Parameters()
+	}
+
+	bt.MasterModel.ZeroGrad()
+	ReduceGradients(masterParams, workerParams, bt.NumWorkers)
+
+	// 3. Scale gradients by 1 / len(batch)
+	scale := float32(1.0) / float32(B)
+	for _, p := range masterParams {
+		for i := range p.Grad {
+			p.Grad[i] *= scale
+		}
+	}
+
+	// 4. Execute optimizer.Step() on Master model
+	if bt.Optimizer.Params == nil || len(bt.Optimizer.Params) == 0 {
+		bt.Optimizer.Params = masterParams
+	}
+	bt.Optimizer.Step()
+
+	return avgLoss, accuracy
+}
+
+// Evaluate computes loss and classification accuracy on a validation dataset without weight updates.
+func (bt *BatchTrainer) Evaluate(samples []Sample) (float32, float32) {
+	if len(samples) == 0 {
+		return 0, 0
+	}
+	bt.MasterModel.SetTraining(false)
+
+	var totalLoss float32
+	var correct int
+
+	for _, sample := range samples {
+		logits := bt.MasterModel.Forward(sample.Input)
+		probs := Softmax(logits)
+		loss := bt.MasterModel.LossFn.Forward(probs, sample.TargetClass)
+		totalLoss += loss
+
+		predClass := 0
+		maxP := probs[0]
+		for k := 1; k < len(probs); k++ {
+			if probs[k] > maxP {
+				maxP = probs[k]
+				predClass = k
+			}
+		}
+		if predClass == sample.TargetClass {
+			correct++
+		}
+	}
+
+	return totalLoss / float32(len(samples)), float32(correct) / float32(len(samples))
+}
+
+// ModelCheckpoint preserves parameter weights from the epoch achieving the highest validation accuracy.
+type ModelCheckpoint struct {
+	BestValAcc  float64
+	BestEpoch   int
+	BestWeights [][]float32
+}
+
+// NewModelCheckpoint constructs a new ModelCheckpoint tracker.
+func NewModelCheckpoint() *ModelCheckpoint {
+	return &ModelCheckpoint{
+		BestValAcc:  -1.0,
+		BestEpoch:   -1,
+		BestWeights: nil,
+	}
+}
+
+// Update records model weights if current validation accuracy strictly exceeds previous best accuracy.
+// Returns true if a new best accuracy was achieved.
+func (cp *ModelCheckpoint) Update(model *DiagonNetModel, epoch int, valAcc float64) bool {
+	if valAcc > cp.BestValAcc {
+		cp.BestValAcc = valAcc
+		cp.BestEpoch = epoch
+		cp.BestWeights = model.SnapshotWeights()
+		return true
+	}
+	return false
+}
+
+// RestoreBest restores the optimal historical weights into the model.
+func (cp *ModelCheckpoint) RestoreBest(model *DiagonNetModel) {
+	if cp.BestWeights != nil && model != nil {
+		model.RestoreWeights(cp.BestWeights)
+	}
+}
+
+// ClassMetrics holds precision, recall, and F1-score for an individual class.
+type ClassMetrics struct {
+	ClassIndex int
+	ClassName  string
+	TP         int
+	FP         int
+	FN         int
+	Support    int
+	Precision  float64
+	Recall     float64
+	F1Score    float64
+}
+
+// EvaluationReport contains comprehensive multi-class classification evaluation metrics.
+type EvaluationReport struct {
+	NumClasses      int
+	TotalSamples    int
+	Accuracy        float64
+	MacroPrecision  float64
+	MacroRecall     float64
+	MacroF1         float64
+	ClassMetrics    []ClassMetrics
+	ConfusionMatrix [][]int
+}
+
+// ComputeEvaluationMetrics computes confusion matrix, per-class Precision, Recall, F1, and Macro-F1.
+func ComputeEvaluationMetrics(model *DiagonNetModel, samples []Sample, classNames []string) EvaluationReport {
+	K := model.NumClasses
+	if len(classNames) < K {
+		classNames = make([]string, K)
+		for i := 0; i < K; i++ {
+			classNames[i] = fmt.Sprintf("Class_%d", i)
+		}
+	}
+
+	model.SetTraining(false)
+
+	// Build K x K Confusion Matrix [actual][predicted]
+	matrix := make([][]int, K)
+	for i := 0; i < K; i++ {
+		matrix[i] = make([]int, K)
+	}
+
+	totalSamples := len(samples)
+	correct := 0
+
+	for _, sample := range samples {
+		logits := model.Forward(sample.Input)
+		probs := Softmax(logits)
+
+		predClass := 0
+		maxP := probs[0]
+		for k := 1; k < len(probs); k++ {
+			if probs[k] > maxP {
+				maxP = probs[k]
+				predClass = k
+			}
+		}
+
+		actual := sample.TargetClass
+		if actual >= 0 && actual < K && predClass >= 0 && predClass < K {
+			matrix[actual][predClass]++
+			if actual == predClass {
+				correct++
+			}
+		}
+	}
+
+	var accuracy float64
+	if totalSamples > 0 {
+		accuracy = float64(correct) / float64(totalSamples)
+	}
+
+	classMetrics := make([]ClassMetrics, K)
+	var sumPrec, sumRec, sumF1 float64
+
+	for c := 0; c < K; c++ {
+		tp := matrix[c][c]
+
+		// False Positives: predicted as c, but actual != c (column sum - TP)
+		fp := 0
+		for a := 0; a < K; a++ {
+			if a != c {
+				fp += matrix[a][c]
+			}
+		}
+
+		// False Negatives: actual is c, but predicted != c (row sum - TP)
+		fn := 0
+		for p := 0; p < K; p++ {
+			if p != c {
+				fn += matrix[c][p]
+			}
+		}
+
+		support := tp + fn
+
+		var prec float64
+		if tp+fp > 0 {
+			prec = float64(tp) / float64(tp+fp)
+		}
+
+		var rec float64
+		if tp+fn > 0 {
+			rec = float64(tp) / float64(tp+fn)
+		}
+
+		var f1 float64
+		if prec+rec > 0 {
+			f1 = 2.0 * (prec * rec) / (prec + rec)
+		}
+
+		classMetrics[c] = ClassMetrics{
+			ClassIndex: c,
+			ClassName:  classNames[c],
+			TP:         tp,
+			FP:         fp,
+			FN:         fn,
+			Support:    support,
+			Precision:  prec,
+			Recall:     rec,
+			F1Score:    f1,
+		}
+
+		sumPrec += prec
+		sumRec += rec
+		sumF1 += f1
+	}
+
+	macroPrec := sumPrec / float64(K)
+	macroRec := sumRec / float64(K)
+	macroF1 := sumF1 / float64(K)
+
+	return EvaluationReport{
+		NumClasses:      K,
+		TotalSamples:    totalSamples,
+		Accuracy:        accuracy,
+		MacroPrecision:  macroPrec,
+		MacroRecall:     macroRec,
+		MacroF1:         macroF1,
+		ClassMetrics:    classMetrics,
+		ConfusionMatrix: matrix,
+	}
+}
+
+// PrintEvaluationReport outputs a clean tabular evaluation report with per-class and macro metrics.
+func PrintEvaluationReport(report EvaluationReport) {
+	fmt.Println("=======================================================================================")
+	fmt.Println("                       DIAGONNET MODEL EVALUATION REPORT                               ")
+	fmt.Println("=======================================================================================")
+	fmt.Printf(" Total Samples Tested : %d\n", report.TotalSamples)
+	fmt.Printf(" Overall Accuracy     : %6.2f%% (%d / %d)\n", report.Accuracy*100.0, int(report.Accuracy*float64(report.TotalSamples)+0.5), report.TotalSamples)
+	fmt.Printf(" Macro-Precision      : %6.2f%%\n", report.MacroPrecision*100.0)
+	fmt.Printf(" Macro-Recall         : %6.2f%%\n", report.MacroRecall*100.0)
+	fmt.Printf(" Macro-F1 Score       : %6.2f%%\n", report.MacroF1*100.0)
+	fmt.Println("---------------------------------------------------------------------------------------")
+	fmt.Printf(" %-16s | %7s | %4s | %4s | %4s | %10s | %8s | %8s\n",
+		"Class Name", "Support", "TP", "FP", "FN", "Precision", "Recall", "F1-Score")
+	fmt.Println("---------------------------------------------------------------------------------------")
+
+	for _, cm := range report.ClassMetrics {
+		fmt.Printf(" %-16s | %7d | %4d | %4d | %4d | %9.2f%% | %7.2f%% | %7.2f%%\n",
+			cm.ClassName, cm.Support, cm.TP, cm.FP, cm.FN, cm.Precision*100.0, cm.Recall*100.0, cm.F1Score*100.0)
+	}
+
+	fmt.Println("---------------------------------------------------------------------------------------")
+	fmt.Printf(" %-16s | %7d | %4s | %4s | %4s | %9.2f%% | %7.2f%% | %7.2f%%\n",
+		"MACRO AVERAGE", report.TotalSamples, "-", "-", "-", report.MacroPrecision*100.0, report.MacroRecall*100.0, report.MacroF1*100.0)
+	fmt.Println("=======================================================================================")
+}
+
+// ============================================================================
+// 8. BASELINE ARCHITECTURES & COMPARATIVE BENCHMARK RUNNER (Prompt 45)
+// ============================================================================
+
+// TrainableModel defines the common interface for benchmark neural architectures.
+type TrainableModel interface {
+	Forward(input *Tensor) []float32
+	ForwardBackward(input *Tensor, targetClass int) (float32, []float32)
+	Parameters() []*Parameter
+	SetTraining(training bool)
+	SnapshotWeights() [][]float32
+	RestoreWeights(snapshot [][]float32)
+}
+
+// SimpleCNNModel implements a standard 1-channel convolutional baseline without manifold calculus.
+type SimpleCNNModel struct {
+	NumClasses int
+	Conv       *Conv2DLayer
+	ReLU       *ReLULayer
+	Pool       *AdaptiveAvgPool2DLayer
+	Dropout    *DropoutLayer
+	FC         *LinearLayer
+	LossFn     *CategoricalCrossEntropyLoss
+}
+
+// NewSimpleCNNModel constructs a 1-channel baseline convolutional model.
+func NewSimpleCNNModel(numClasses int, rng *rand.Rand) *SimpleCNNModel {
+	if rng == nil {
+		rng = rand.New(rand.NewSource(42))
+	}
+	conv := NewConv2DLayer(1, 16, 3, 2, 1, rng)
+	pool := NewAdaptiveAvgPool2DLayer(4, 4)
+	dropout := NewDropoutLayer(0.2, rng)
+	fc := NewLinearLayer(16*4*4, numClasses, rng)
+	lossFn := NewCategoricalCrossEntropyLoss()
+
+	return &SimpleCNNModel{
+		NumClasses: numClasses,
+		Conv:       conv,
+		ReLU:       NewReLULayer(),
+		Pool:       pool,
+		Dropout:    dropout,
+		FC:         fc,
+		LossFn:     lossFn,
+	}
+}
+
+func (m *SimpleCNNModel) Parameters() []*Parameter {
+	return []*Parameter{
+		m.Conv.Weights,
+		m.Conv.Bias,
+		m.FC.Weights,
+		m.FC.Biases,
+	}
+}
+
+func (m *SimpleCNNModel) SetTraining(training bool) {
+	m.Dropout.Training = training
+}
+
+func (m *SimpleCNNModel) SnapshotWeights() [][]float32 {
+	params := m.Parameters()
+	snapshot := make([][]float32, len(params))
+	for i, p := range params {
+		if p != nil {
+			snapshot[i] = make([]float32, len(p.Data))
+			copy(snapshot[i], p.Data)
+		}
+	}
+	return snapshot
+}
+
+func (m *SimpleCNNModel) RestoreWeights(snapshot [][]float32) {
+	params := m.Parameters()
+	for i, p := range params {
+		if p != nil && i < len(snapshot) && snapshot[i] != nil {
+			copy(p.Data, snapshot[i])
+		}
+	}
+}
+
+func (m *SimpleCNNModel) Forward(input *Tensor) []float32 {
+	convOut := m.Conv.Forward(input)
+	reluOut := m.ReLU.ForwardTensor(convOut)
+	poolOut := m.Pool.Forward(reluOut)
+	dropOut := m.Dropout.Forward(poolOut.Data)
+	logits := m.FC.Forward(dropOut)
+	return logits
+}
+
+func (m *SimpleCNNModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
+	convOut := m.Conv.Forward(input)
+	reluOut := m.ReLU.ForwardTensor(convOut)
+	poolOut := m.Pool.Forward(reluOut)
+	dropOut := m.Dropout.Forward(poolOut.Data)
+	logits := m.FC.Forward(dropOut)
+
+	probs := Softmax(logits)
+	loss := m.LossFn.Forward(probs, targetClass)
+
+	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
+	gradDrop := m.FC.Backward(gradLogits)
+	gradPoolData := m.Dropout.Backward(gradDrop)
+
+	gradPoolTensor := &Tensor{
+		Channels: m.Conv.OutChannels,
+		Height:   m.Pool.TargetH,
+		Width:    m.Pool.TargetW,
+		Data:     gradPoolData,
+	}
+	gradReLU := m.Pool.Backward(gradPoolTensor)
+	gradConvOut := m.ReLU.BackwardTensor(gradReLU)
+	m.Conv.Backward(gradConvOut)
+
+	return loss, probs
+}
+
+// SimpleMLPModel implements a fully-connected baseline neural network.
+type SimpleMLPModel struct {
+	NumClasses int
+	Pool       *AdaptiveAvgPool2DLayer
+	FC1        *LinearLayer
+	ReLU       *ReLULayer
+	Dropout    *DropoutLayer
+	FC2        *LinearLayer
+	LossFn     *CategoricalCrossEntropyLoss
+}
+
+// NewSimpleMLPModel constructs a fully-connected baseline neural network.
+func NewSimpleMLPModel(numClasses int, rng *rand.Rand) *SimpleMLPModel {
+	if rng == nil {
+		rng = rand.New(rand.NewSource(42))
+	}
+	pool := NewAdaptiveAvgPool2DLayer(16, 16) // 1x16x16 = 256
+	fc1 := NewLinearLayer(256, 64, rng)
+	dropout := NewDropoutLayer(0.2, rng)
+	fc2 := NewLinearLayer(64, numClasses, rng)
+	lossFn := NewCategoricalCrossEntropyLoss()
+
+	return &SimpleMLPModel{
+		NumClasses: numClasses,
+		Pool:       pool,
+		FC1:        fc1,
+		ReLU:       NewReLULayer(),
+		Dropout:    dropout,
+		FC2:        fc2,
+		LossFn:     lossFn,
+	}
+}
+
+func (m *SimpleMLPModel) Parameters() []*Parameter {
+	return []*Parameter{
+		m.FC1.Weights,
+		m.FC1.Biases,
+		m.FC2.Weights,
+		m.FC2.Biases,
+	}
+}
+
+func (m *SimpleMLPModel) SetTraining(training bool) {
+	m.Dropout.Training = training
+}
+
+func (m *SimpleMLPModel) SnapshotWeights() [][]float32 {
+	params := m.Parameters()
+	snapshot := make([][]float32, len(params))
+	for i, p := range params {
+		if p != nil {
+			snapshot[i] = make([]float32, len(p.Data))
+			copy(snapshot[i], p.Data)
+		}
+	}
+	return snapshot
+}
+
+func (m *SimpleMLPModel) RestoreWeights(snapshot [][]float32) {
+	params := m.Parameters()
+	for i, p := range params {
+		if p != nil && i < len(snapshot) && snapshot[i] != nil {
+			copy(p.Data, snapshot[i])
+		}
+	}
+}
+
+func (m *SimpleMLPModel) Forward(input *Tensor) []float32 {
+	poolOut := m.Pool.Forward(input)
+	fc1Out := m.FC1.Forward(poolOut.Data)
+	reluOut := m.ReLU.Forward(fc1Out)
+	dropOut := m.Dropout.Forward(reluOut)
+	logits := m.FC2.Forward(dropOut)
+	return logits
+}
+
+func (m *SimpleMLPModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
+	poolOut := m.Pool.Forward(input)
+	fc1Out := m.FC1.Forward(poolOut.Data)
+	reluOut := m.ReLU.Forward(fc1Out)
+	dropOut := m.Dropout.Forward(reluOut)
+	logits := m.FC2.Forward(dropOut)
+
+	probs := Softmax(logits)
+	loss := m.LossFn.Forward(probs, targetClass)
+
+	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
+	gradDrop := m.FC2.Backward(gradLogits)
+	gradReLU := m.Dropout.Backward(gradDrop)
+	gradFC1 := m.ReLU.Backward(gradReLU)
+	gradPoolData := m.FC1.Backward(gradFC1)
+
+	gradPoolTensor := &Tensor{
+		Channels: 1,
+		Height:   m.Pool.TargetH,
+		Width:    m.Pool.TargetW,
+		Data:     gradPoolData,
+	}
+	m.Pool.Backward(gradPoolTensor)
+
+	return loss, probs
+}
+
+// BenchmarkResult stores performance metrics for a single architecture run.
+type BenchmarkResult struct {
+	Architecture string  `json:"architecture"`
+	ParamCount   int     `json:"parameters"`
+	TrainTimeMs  int64   `json:"train_time_ms"`
+	FinalLoss    float32 `json:"final_loss"`
+	ValAccuracy  float64 `json:"val_accuracy"`
+	ValMacroF1   float64 `json:"val_macro_f1"`
+}
+
+// CountModelParameters computes the total number of trainable floating-point weights and biases in parameter buffers.
+func CountModelParameters(params []*Parameter) int {
+	total := 0
+	for _, p := range params {
+		if p != nil {
+			total += len(p.Data)
+		}
+	}
+	return total
+}
+
+// EvaluateModelPredictions runs forward inference across samples and calculates accuracy, Macro-F1, and loss.
+func EvaluateModelPredictions(model TrainableModel, samples []Sample, numClasses int, classNames []string) (float32, float64, float64) {
+	if len(samples) == 0 {
+		return 0, 0, 0
+	}
+	model.SetTraining(false)
+	var totalLoss float32
+
+	matrix := make([][]int, numClasses)
+	for i := 0; i < numClasses; i++ {
+		matrix[i] = make([]int, numClasses)
+	}
+
+	correct := 0
+	lossFn := NewCategoricalCrossEntropyLoss()
+
+	for _, s := range samples {
+		logits := model.Forward(s.Input)
+		probs := Softmax(logits)
+		loss := lossFn.Forward(probs, s.TargetClass)
+		totalLoss += loss
+
+		pred := 0
+		maxP := probs[0]
+		for k := 1; k < len(probs); k++ {
+			if probs[k] > maxP {
+				maxP = probs[k]
+				pred = k
+			}
+		}
+		if s.TargetClass >= 0 && s.TargetClass < numClasses && pred >= 0 && pred < numClasses {
+			matrix[s.TargetClass][pred]++
+			if pred == s.TargetClass {
+				correct++
+			}
+		}
+	}
+
+	acc := float64(correct) / float64(len(samples))
+	var sumF1 float64
+	for c := 0; c < numClasses; c++ {
+		tp := matrix[c][c]
+		fp := 0
+		for a := 0; a < numClasses; a++ {
+			if a != c {
+				fp += matrix[a][c]
+			}
+		}
+		fn := 0
+		for p := 0; p < numClasses; p++ {
+			if p != c {
+				fn += matrix[c][p]
+			}
+		}
+		var prec, rec, f1 float64
+		if tp+fp > 0 {
+			prec = float64(tp) / float64(tp+fp)
+		}
+		if tp+fn > 0 {
+			rec = float64(tp) / float64(tp+fn)
+		}
+		if prec+rec > 0 {
+			f1 = 2.0 * (prec * rec) / (prec + rec)
+		}
+		sumF1 += f1
+	}
+	macroF1 := sumF1 / float64(numClasses)
+	avgLoss := totalLoss / float32(len(samples))
+
+	return avgLoss, acc, macroF1
+}
+
+// TrainBenchmarkModel trains an architecture model on the provided dataset split for the specified epochs.
+func TrainBenchmarkModel(model TrainableModel, trainSamples, valSamples []Sample, numClasses int, epochs int, batchSize int, lr float32) BenchmarkResult {
+	params := model.Parameters()
+	paramCount := CountModelParameters(params)
+
+	opt := NewAdamOptimizer(params, AdamOptimizerConfig{
+		LearningRate: lr,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+		WeightDecay:  1e-4,
+	})
+
+	bestAcc := -1.0
+	var bestWeights [][]float32
+	var finalLoss float32
+
+	startTime := time.Now()
+
+	N := len(trainSamples)
+	indices := make([]int, N)
+	for i := 0; i < N; i++ {
+		indices[i] = i
+	}
+	rng := rand.New(rand.NewSource(42))
+
+	for ep := 1; ep <= epochs; ep++ {
+		model.SetTraining(true)
+		rng.Shuffle(N, func(i, j int) {
+			indices[i], indices[j] = indices[j], indices[i]
+		})
+
+		var epochLoss float32
+		numBatches := (N + batchSize - 1) / batchSize
+
+		for b := 0; b < numBatches; b++ {
+			start := b * batchSize
+			end := start + batchSize
+			if end > N {
+				end = N
+			}
+			currBatchSize := end - start
+			if currBatchSize <= 0 {
+				continue
+			}
+
+			opt.ZeroGrad()
+
+			var batchLoss float32
+			for i := start; i < end; i++ {
+				idx := indices[i]
+				loss, _ := model.ForwardBackward(trainSamples[idx].Input, trainSamples[idx].TargetClass)
+				batchLoss += loss
+			}
+
+			scale := float32(1.0) / float32(currBatchSize)
+			for _, p := range params {
+				if p != nil {
+					for j := range p.Grad {
+						p.Grad[j] *= scale
+					}
+				}
+			}
+
+			opt.Step()
+			epochLoss += batchLoss / float32(currBatchSize)
+		}
+
+		finalLoss = epochLoss / float32(numBatches)
+
+		_, valAcc, _ := EvaluateModelPredictions(model, valSamples, numClasses, nil)
+		if valAcc > bestAcc {
+			bestAcc = valAcc
+			bestWeights = model.SnapshotWeights()
+		}
+	}
+
+	trainTimeMs := time.Since(startTime).Milliseconds()
+
+	if bestWeights != nil {
+		model.RestoreWeights(bestWeights)
+	}
+
+	_, valAcc, valMacroF1 := EvaluateModelPredictions(model, valSamples, numClasses, nil)
+
+	return BenchmarkResult{
+		ParamCount:  paramCount,
+		TrainTimeMs: trainTimeMs,
+		FinalLoss:   finalLoss,
+		ValAccuracy: valAcc,
+		ValMacroF1:  valMacroF1,
+	}
+}
+
+// GenerateSyntheticBenchmarkDataset creates a deterministic synthetic vision dataset of K classes with geometric shapes.
+func GenerateSyntheticBenchmarkDataset(numClasses int, samplesPerClass int, seed int64) []Sample {
+	rng := rand.New(rand.NewSource(seed))
+	samples := make([]Sample, 0, numClasses*samplesPerClass)
+
+	for c := 0; c < numClasses; c++ {
+		for s := 0; s < samplesPerClass; s++ {
+			t := NewTensor(1, 100, 100)
+			cx := 50 + rng.Intn(11) - 5
+			cy := 50 + rng.Intn(11) - 5
+			radius := 18 + rng.Intn(9)
+
+			switch c % 5 {
+			case 0: // Circle / Disk
+				for y := 0; y < 100; y++ {
+					for x := 0; x < 100; x++ {
+						dx := float64(x - cx)
+						dy := float64(y - cy)
+						dist := math.Sqrt(dx*dx + dy*dy)
+						if math.Abs(dist-float64(radius)) <= 3.0 {
+							t.Set(0, y, x, 0.9)
+						}
+					}
+				}
+			case 1: // Horizontal stripe
+				yMin := cy - radius/2
+				yMax := cy + radius/2
+				for y := yMin; y <= yMax; y++ {
+					for x := 20; x < 80; x++ {
+						if y >= 0 && y < 100 {
+							t.Set(0, y, x, 0.9)
+						}
+					}
+				}
+			case 2: // Vertical stripe
+				xMin := cx - radius/2
+				xMax := cx + radius/2
+				for y := 20; y < 80; y++ {
+					for x := xMin; x <= xMax; x++ {
+						if x >= 0 && x < 100 {
+							t.Set(0, y, x, 0.9)
+						}
+					}
+				}
+			case 3: // Cross / Plus
+				for y := 20; y < 80; y++ {
+					for x := 20; x < 80; x++ {
+						if (math.Abs(float64(x-cx)) <= 4 && math.Abs(float64(y-cy)) <= float64(radius)) ||
+							(math.Abs(float64(y-cy)) <= 4 && math.Abs(float64(x-cx)) <= float64(radius)) {
+							t.Set(0, y, x, 0.9)
+						}
+					}
+				}
+			case 4: // Diagonal Line
+				for d := -radius; d <= radius; d++ {
+					x := cx + d
+					y := cy + d
+					if x >= 0 && x < 100 && y >= 0 && y < 100 {
+						t.Set(0, y, x, 0.9)
+					}
+				}
+			}
+			samples = append(samples, Sample{Input: t, TargetClass: c})
+		}
+	}
+	return samples
+}
+
+// ExportBenchmarkCSV writes benchmark comparison results to a standard CSV file.
+func ExportBenchmarkCSV(path string, results []BenchmarkResult) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create CSV file %s: %w", path, err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	writer.WriteString("Architecture,Parameters,TrainTimeMs,FinalLoss,ValAccuracy,ValMacroF1\n")
+	for _, r := range results {
+		line := fmt.Sprintf("%s,%d,%d,%.6f,%.6f,%.6f\n",
+			r.Architecture, r.ParamCount, r.TrainTimeMs, r.FinalLoss, r.ValAccuracy, r.ValMacroF1)
+		writer.WriteString(line)
+	}
+	return writer.Flush()
+}
+
+// RunArchitectureBenchmark executes the 3-model benchmark comparison and writes the results CSV.
+func RunArchitectureBenchmark(dataDir string, epochs int, batchSize int, lr float32, csvOutPath string) ([]BenchmarkResult, error) {
+	fmt.Println("====================================================================================================")
+	fmt.Println("                        DIAGONNET ARCHITECTURE BENCHMARK & COMPARISON")
+	fmt.Println("====================================================================================================")
+
+	var trainSamples, valSamples []Sample
+	var numClasses int
+
+	// 1. Attempt loading from filesystem
+	ds, err := ScanDataset(dataDir)
+	if err == nil && ds.Metadata.NumClasses >= 2 {
+		numClasses = ds.Metadata.NumClasses
+		trainItems, valItems := TrainTestSplit(ds.Samples, 0.20, 42)
+
+		loadItems := func(items []ImageItem) []Sample {
+			res := make([]Sample, 0, len(items))
+			for _, it := range items {
+				gray, err := LoadImageFromFile(it.Path)
+				if err != nil {
+					continue
+				}
+				bbox := FindBoundingBox(gray, 10)
+				centered := PadAndCenter(gray, bbox)
+				stretched := ContrastStretch(centered)
+				resized := ResizeBilinear(stretched, 100, 100)
+				t := GrayImageToTensor(resized)
+				res = append(res, Sample{Input: t, TargetClass: it.ClassIndex})
+			}
+			return res
+		}
+
+		trainSamples = loadItems(trainItems)
+		valSamples = loadItems(valItems)
+		fmt.Printf(" Loaded Dataset from '%s': %d Train / %d Validation samples across %d classes.\n",
+			dataDir, len(trainSamples), len(valSamples), numClasses)
+	}
+
+	// Fallback to deterministic synthetic vision benchmark if dataset empty or unavailable
+	if len(trainSamples) == 0 || len(valSamples) == 0 {
+		numClasses = 5
+		allSynth := GenerateSyntheticBenchmarkDataset(numClasses, 60, 42)
+		trainSamples = allSynth[:200]
+		valSamples = allSynth[200:]
+		fmt.Printf(" Using Synthetic Benchmark Dataset: %d Train / %d Validation samples across %d classes.\n",
+			len(trainSamples), len(valSamples), numClasses)
+	}
+
+	if epochs <= 0 {
+		epochs = 15
+	}
+	if batchSize <= 0 {
+		batchSize = 32
+	}
+	if lr <= 0 {
+		lr = 0.002
+	}
+	if csvOutPath == "" {
+		csvOutPath = filepath.Join("assets", "comparison_results.csv")
+	}
+
+	fmt.Printf(" Config: Epochs=%d | BatchSize=%d | InitialLR=%.4f | Target CSV=%s\n",
+		epochs, batchSize, lr, csvOutPath)
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+
+	results := make([]BenchmarkResult, 3)
+
+	// 1. DiagonNet Model (13-Channel Manifold CNN)
+	fmt.Print(" [1/3] Training DiagonNet (13-Channel Manifold CNN)... ")
+	diagonRng := rand.New(rand.NewSource(42))
+	diagonModel := NewDiagonNetModel(numClasses, diagonRng)
+	res1 := TrainBenchmarkModel(diagonModel, trainSamples, valSamples, numClasses, epochs, batchSize, lr)
+	res1.Architecture = "DiagonNet (13-Ch)"
+	results[0] = res1
+	fmt.Printf("Done (%.2fs | Acc: %.2f%% | Loss: %.4f)\n", float64(res1.TrainTimeMs)/1000.0, res1.ValAccuracy*100.0, res1.FinalLoss)
+
+	// 2. SimpleCNN Model (1-Channel CNN)
+	fmt.Print(" [2/3] Training SimpleCNN (1-Channel Standard CNN)...  ")
+	cnnRng := rand.New(rand.NewSource(42))
+	cnnModel := NewSimpleCNNModel(numClasses, cnnRng)
+	res2 := TrainBenchmarkModel(cnnModel, trainSamples, valSamples, numClasses, epochs, batchSize, lr)
+	res2.Architecture = "SimpleCNN (1-Ch)"
+	results[1] = res2
+	fmt.Printf("Done (%.2fs | Acc: %.2f%% | Loss: %.4f)\n", float64(res2.TrainTimeMs)/1000.0, res2.ValAccuracy*100.0, res2.FinalLoss)
+
+	// 3. SimpleMLP Model (Dense Baseline)
+	fmt.Print(" [3/3] Training SimpleMLP (Fully-Connected Baseline)... ")
+	mlpRng := rand.New(rand.NewSource(42))
+	mlpModel := NewSimpleMLPModel(numClasses, mlpRng)
+	res3 := TrainBenchmarkModel(mlpModel, trainSamples, valSamples, numClasses, epochs, batchSize, lr)
+	res3.Architecture = "SimpleMLP (Dense)"
+	results[2] = res3
+	fmt.Printf("Done (%.2fs | Acc: %.2f%% | Loss: %.4f)\n", float64(res3.TrainTimeMs)/1000.0, res3.ValAccuracy*100.0, res3.FinalLoss)
+
+	// Print Comparative Summary Table
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	fmt.Printf(" %-18s | %10s | %10s | %10s | %12s | %12s | %12s\n",
+		"Architecture", "Parameters", "Train Time", "Final Loss", "Val Accuracy", "Val Macro-F1", "Delta vs CNN")
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+
+	baselineAcc := results[1].ValAccuracy
+	for _, r := range results {
+		delta := (r.ValAccuracy - baselineAcc) * 100.0
+		deltaStr := fmt.Sprintf("%+6.2f%%", delta)
+		if r.Architecture == "SimpleCNN (1-Ch)" {
+			deltaStr = "Baseline"
+		}
+		fmt.Printf(" %-18s | %10d | %9.2fs | %10.4f | %11.2f%% | %11.2f%% | %12s\n",
+			r.Architecture, r.ParamCount, float64(r.TrainTimeMs)/1000.0, r.FinalLoss, r.ValAccuracy*100.0, r.ValMacroF1*100.0, deltaStr)
+	}
+
+	// Export to CSV
+	if err := ExportBenchmarkCSV(csvOutPath, results); err != nil {
+		fmt.Printf(" [Warning] Failed to export CSV: %v\n", err)
+	} else {
+		fmt.Printf("----------------------------------------------------------------------------------------------------\n")
+		fmt.Printf(" Exported comparative results CSV to: %s\n", csvOutPath)
+	}
+	fmt.Println("====================================================================================================")
+
+	return results, nil
+}
+
+// ============================================================================
+// 9. EMBEDDED HTML5 CANVAS & REAL-TIME WEB INFERENCE ENGINE (Prompts 46 - 48)
+// ============================================================================
+
+// webAppHTML embeds the complete single-page interactive drawing canvas application.
+const webAppHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DiagonNet | Real-Time Neural Drawing Canvas</title>
+<style>
+  :root {
+    --bg-main: #0b0f19;
+    --bg-card: #151e32;
+    --border-color: #263554;
+    --accent-blue: #38bdf8;
+    --accent-cyan: #06b6d4;
+    --accent-emerald: #10b981;
+    --accent-pink: #ec4899;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body { background: var(--bg-main); color: var(--text-primary); min-height: 100vh; display: flex; flex-direction: column; }
+  header { background: var(--bg-card); border-bottom: 1px solid var(--border-color); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+  .logo-title { display: flex; align-items: center; gap: 0.75rem; font-size: 1.25rem; font-weight: 700; background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .badge { background: #1e293b; border: 1px solid var(--border-color); color: var(--accent-blue); padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; }
+  .main-container { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 2rem; display: grid; grid-template-columns: 440px 1fr; gap: 2rem; }
+  @media (max-width: 900px) { .main-container { grid-template-columns: 1fr; } }
+  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 1rem; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4); }
+  .canvas-wrapper { position: relative; width: 400px; height: 400px; margin: 0 auto; border-radius: 0.75rem; overflow: hidden; border: 2px solid var(--border-color); box-shadow: inset 0 2px 8px rgba(0,0,0,0.5); }
+  canvas { width: 400px; height: 400px; background: #000000; cursor: crosshair; touch-action: none; }
+  .controls { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+  button { flex: 1; padding: 0.75rem 1rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: all 0.2s; border: none; font-size: 0.9rem; }
+  .btn-clear { background: #334155; color: #f8fafc; border: 1px solid #475569; }
+  .btn-clear:hover { background: #475569; }
+  .btn-predict { background: linear-gradient(135deg, #0284c7, #06b6d4); color: white; }
+  .btn-predict:hover { opacity: 0.9; transform: translateY(-1px); }
+  .prediction-banner { background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(6, 182, 212, 0.05)); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 0.75rem; padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; }
+  .pred-label-group { display: flex; flex-direction: column; gap: 0.25rem; }
+  .pred-sub { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+  .pred-name { font-size: 2rem; font-weight: 800; color: var(--accent-blue); }
+  .latency-tag { font-family: monospace; font-size: 0.85rem; color: var(--accent-emerald); background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.35rem 0.65rem; border-radius: 0.5rem; }
+  .class-list { display: flex; flex-direction: column; gap: 0.6rem; max-height: 380px; overflow-y: auto; padding-right: 0.25rem; }
+  .class-row { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; }
+  .class-info { display: flex; justify-content: space-between; font-weight: 500; }
+  .progress-bg { height: 8px; background: #1e293b; border-radius: 9999px; overflow: hidden; border: 1px solid #334155; }
+  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 9999px; transition: width 0.15s ease-out; }
+  .class-row.top .progress-fill { background: linear-gradient(90deg, var(--accent-emerald), #34d399); }
+  .shortcut-hint { font-size: 0.75rem; color: var(--text-secondary); text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="logo-title">
+      <span>⬡</span>
+      <span>DiagonNet 13-Manifold Web Engine</span>
+    </div>
+    <div class="badge">Pure Go Zero-Dep Runtime</div>
+  </header>
+  <div class="main-container">
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-weight: 600;">Interactive Sketch Canvas</span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">400 &times; 400 px</span>
+      </div>
+      <div class="canvas-wrapper">
+        <canvas id="paintCanvas" width="400" height="400"></canvas>
+      </div>
+      <div class="controls">
+        <button class="btn-clear" id="btnClear">Clear Canvas (C)</button>
+        <button class="btn-predict" id="btnPredict">Predict</button>
+      </div>
+      <div class="shortcut-hint">Shortcuts: <b>C</b> / <b>Esc</b> to Clear | Real-Time Continuous Autograd</div>
+    </div>
+    <div class="card">
+      <div class="prediction-banner">
+        <div class="pred-label-group">
+          <span class="pred-sub">Top Predicted Class</span>
+          <span class="pred-name" id="topClass">&mdash;</span>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem;">
+          <span id="topConfidence" style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary);">0.0%</span>
+          <span class="latency-tag" id="latencyBadge">&mdash; ms</span>
+        </div>
+      </div>
+      <div style="font-weight: 600; font-size: 0.95rem; margin-top: 0.5rem;">Class Probability Distribution</div>
+      <div class="class-list" id="classList">
+        <div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Draw on the canvas to evaluate live probabilities.</div>
+      </div>
+    </div>
+  </div>
+<script>
+  const canvas = document.getElementById('paintCanvas');
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, 400, 400);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 22;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  let drawing = false;
+  let hasDrawn = false;
+  let debounceTimer = null;
+
+  function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: (clientX - rect.left) * (canvas.width / rect.width),
+      y: (clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+
+  function startDraw(e) {
+    drawing = true;
+    hasDrawn = true;
+    const pos = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y);
+    draw(e);
+  }
+
+  function draw(e) {
+    if (!drawing) return;
+    const pos = getPos(e);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    schedulePredict();
+  }
+
+  function endDraw() {
+    if (drawing) {
+      drawing = false;
+      ctx.closePath();
+      triggerPredict();
+    }
+  }
+
+  canvas.addEventListener('mousedown', startDraw);
+  canvas.addEventListener('mousemove', draw);
+  window.addEventListener('mouseup', endDraw);
+
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDraw(e); }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
+  window.addEventListener('touchend', endDraw);
+
+  function clearCanvas() {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, 400, 400);
+    hasDrawn = false;
+    document.getElementById('topClass').innerText = '—';
+    document.getElementById('topConfidence').innerText = '0.0%';
+    document.getElementById('latencyBadge').innerText = '— ms';
+    document.getElementById('classList').innerHTML = '<div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Canvas cleared. Draw a sketch.</div>';
+  }
+
+  document.getElementById('btnClear').addEventListener('click', clearCanvas);
+  document.getElementById('btnPredict').addEventListener('click', triggerPredict);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'c' || e.key === 'C' || e.key === 'Escape') {
+      clearCanvas();
+    }
+  });
+
+  function schedulePredict() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(triggerPredict, 60);
+  }
+
+  async function triggerPredict() {
+    if (!hasDrawn) return;
+    const dataUrl = canvas.toDataURL('image/png');
+    try {
+      const resp = await fetch('/api/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl })
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      renderPrediction(data);
+    } catch (err) {
+      console.error('Predict error:', err);
+    }
+  }
+
+  function renderPrediction(data) {
+    if (data.is_blank) {
+      document.getElementById('topClass').innerText = 'Blank';
+      document.getElementById('topConfidence').innerText = '0.0%';
+      document.getElementById('latencyBadge').innerText = data.latency_ms.toFixed(2) + ' ms';
+      return;
+    }
+    document.getElementById('topClass').innerText = data.predicted_class;
+    document.getElementById('topConfidence').innerText = (data.confidence * 100).toFixed(1) + '%';
+    document.getElementById('latencyBadge').innerText = '⚡ ' + data.latency_ms.toFixed(2) + ' ms';
+
+    const list = document.getElementById('classList');
+    list.innerHTML = '';
+    const sorted = [...data.confidences].sort((a, b) => b.confidence - a.confidence);
+
+    sorted.forEach((item, idx) => {
+      const pct = (item.confidence * 100).toFixed(1);
+      const isTop = idx === 0;
+      const row = document.createElement('div');
+      row.className = 'class-row' + (isTop ? ' top' : '');
+      row.innerHTML =
+        '<div class="class-info">' +
+          '<span style="' + (isTop ? 'color: var(--accent-blue); font-weight:700;' : '') + '">' + item.class_name + '</span>' +
+          '<span style="' + (isTop ? 'color: var(--accent-emerald); font-weight:700;' : 'color: var(--text-secondary);') + '">' + pct + '%</span>' +
+        '</div>' +
+        '<div class="progress-bg">' +
+          '<div class="progress-fill" style="width: ' + pct + '%"></div>' +
+        '</div>';
+      list.appendChild(row);
+    });
+  }
+
+  // Initial metadata query
+  fetch('/api/info').then(r => r.json()).then(info => {
+    if (info && info.classes) {
+      const list = document.getElementById('classList');
+      list.innerHTML = '';
+      info.classes.forEach(c => {
+        const row = document.createElement('div');
+        row.className = 'class-row';
+        row.innerHTML =
+          '<div class="class-info">' +
+            '<span>' + c + '</span>' +
+            '<span style="color: var(--text-secondary);">0.0%</span>' +
+          '</div>' +
+          '<div class="progress-bg"><div class="progress-fill" style="width: 0%"></div></div>';
+        list.appendChild(row);
+      });
+    }
+  }).catch(() => {});
+</script>
+</body>
+</html>`
+
+// PredictRequest contains the client drawing payload.
+type PredictRequest struct {
+	Image string `json:"image"`
+}
+
+// ClassConfidence contains an individual class prediction score.
+type ClassConfidence struct {
+	ClassName  string  `json:"class_name"`
+	ClassIndex int     `json:"class_index"`
+	Confidence float32 `json:"confidence"`
+}
+
+// PredictResponse contains the model classification results, confidence array, and inference latency.
+type PredictResponse struct {
+	PredictedClass string            `json:"predicted_class"`
+	ClassIndex     int               `json:"class_index"`
+	Confidence     float32           `json:"confidence"`
+	Confidences    []ClassConfidence `json:"confidences"`
+	LatencyMs      float64           `json:"latency_ms"`
+	IsBlank        bool              `json:"is_blank"`
+}
+
+// PreprocessWebImage takes an arbitrary decoded image, locates the tight bounding box, centers it with scale-invariant padding,
+// stretches stroke contrast, and resamples to a 100x100 Tensor normalized to [0.0, 1.0].
+func PreprocessWebImage(src image.Image) (*Tensor, bool) {
+	bounds := src.Bounds()
+	gray := image.NewGray(bounds)
+	draw.Draw(gray, bounds, src, bounds.Min, draw.Src)
+
+	bbox := FindBoundingBox(gray, 10)
+	if bbox == nil {
+		return NewTensor(1, 100, 100), true
+	}
+
+	centered := PadAndCenter(gray, bbox)
+	stretched := ContrastStretch(centered)
+	resized := ResizeBilinear(stretched, 100, 100)
+	tensor := GrayImageToTensor(resized)
+	return tensor, false
+}
+
+// InferenceServer hosts the HTTP web canvas UI and real-time prediction API.
+type InferenceServer struct {
+	Model      *DiagonNetModel
+	ClassNames []string
+	Port       int
+}
+
+// NewInferenceServer constructs a new inference web server.
+func NewInferenceServer(model *DiagonNetModel, classNames []string, port int) *InferenceServer {
+	if port <= 0 {
+		port = 8081
+	}
+	if len(classNames) < model.NumClasses {
+		classNames = make([]string, model.NumClasses)
+		for i := 0; i < model.NumClasses; i++ {
+			classNames[i] = fmt.Sprintf("Class_%d", i)
+		}
+	}
+	return &InferenceServer{
+		Model:      model,
+		ClassNames: classNames,
+		Port:       port,
+	}
+}
+
+// ServeHTTP handles routing for the web application and REST API.
+func (s *InferenceServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/", "/index.html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(webAppHTML))
+	case "/api/predict":
+		s.handlePredict(w, r)
+	case "/api/info":
+		s.handleInfo(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *InferenceServer) handleInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"classes":     s.ClassNames,
+		"num_classes": s.Model.NumClasses,
+		"parameters":  CountModelParameters(s.Model.Parameters()),
+		"cpu_cores":   runtime.NumCPU(),
+	})
+}
+
+func (s *InferenceServer) handlePredict(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PredictRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid JSON request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	rawB64 := req.Image
+	if idx := strings.Index(rawB64, ","); idx != -1 {
+		rawB64 = rawB64[idx+1:]
+	}
+
+	imgBytes, err := base64.StdEncoding.DecodeString(rawB64)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Base64 decode error: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(imgBytes))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Image decode error: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	start := time.Now()
+
+	tensor, isBlank := PreprocessWebImage(img)
+
+	var predClass int
+	var maxProb float32
+	confidences := make([]ClassConfidence, s.Model.NumClasses)
+
+	if isBlank {
+		for i := 0; i < s.Model.NumClasses; i++ {
+			confidences[i] = ClassConfidence{
+				ClassName:  s.ClassNames[i],
+				ClassIndex: i,
+				Confidence: 0.0,
+			}
+		}
+	} else {
+		s.Model.SetTraining(false)
+		logits := s.Model.Forward(tensor)
+		probs := Softmax(logits)
+
+		for i := 0; i < s.Model.NumClasses; i++ {
+			p := probs[i]
+			if p > maxProb {
+				maxProb = p
+				predClass = i
+			}
+			confidences[i] = ClassConfidence{
+				ClassName:  s.ClassNames[i],
+				ClassIndex: i,
+				Confidence: p,
+			}
+		}
+	}
+
+	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+
+	resp := PredictResponse{
+		PredictedClass: s.ClassNames[predClass],
+		ClassIndex:     predClass,
+		Confidence:     maxProb,
+		Confidences:    confidences,
+		LatencyMs:      latencyMs,
+		IsBlank:        isBlank,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// OpenBrowser opens the specified URL in the system's default web browser across Windows, macOS, and Linux.
+func OpenBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
+}
+
+// StartInferenceServer launches the HTTP web server and optionally opens the browser.
+func StartInferenceServer(model *DiagonNetModel, classNames []string, port int, autoOpen bool) error {
+	srv := NewInferenceServer(model, classNames, port)
+	addr := fmt.Sprintf(":%d", port)
+	url := fmt.Sprintf("http://localhost:%d", port)
+
+	fmt.Println("====================================================================================================")
+	fmt.Println("                       DIAGONNET REAL-TIME INFERENCE & WEB RUNTIME")
+	fmt.Println("====================================================================================================")
+	fmt.Printf(" Server URL         : %s\n", url)
+	fmt.Printf(" HTTP Listen Port   : %d\n", port)
+	fmt.Printf(" Model Classes (K=%d): %v\n", model.NumClasses, classNames)
+	fmt.Printf(" CPU Workers        : %d Logical Cores\n", runtime.NumCPU())
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	fmt.Println(" Access the interactive web canvas in your browser. Press Ctrl+C to terminate.")
+	fmt.Println("====================================================================================================")
+
+	if autoOpen {
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			OpenBrowser(url)
+		}()
+	}
+
+	return http.ListenAndServe(addr, srv)
+}
+
+// ============================================================================
+// 10. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
 
 func printHelp() {
@@ -3157,18 +4821,51 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 }
 
 func runServer(modelPath string, port int) {
-	fmt.Println(">>> [Serve Mode] Initializing interactive HTTP server...")
-	fmt.Printf("    Model Weights Path : %s\n", modelPath)
-	fmt.Printf("    HTTP Listen Port   : %d\n", port)
-	fmt.Printf("    Server URL         : http://localhost:%d\n", port)
-	fmt.Println(">>> Server configured.")
+	fmt.Println(">>> [Serve Mode] Initializing interactive HTTP inference runtime...")
+
+	var model *DiagonNetModel
+	var classNames []string
+
+	// 1. Try loading weights from disk if file exists
+	if _, err := os.Stat(modelPath); err == nil {
+		fmt.Printf("    Loading model weights from: %s\n", modelPath)
+		tempModel := NewDiagonNetModel(2, nil)
+		loadedClasses, err := LoadModelWeights(modelPath, tempModel.Parameters())
+		if err == nil && len(loadedClasses) >= 2 {
+			classNames = loadedClasses
+			model = NewDiagonNetModel(len(classNames), nil)
+			_, _ = LoadModelWeights(modelPath, model.Parameters())
+			fmt.Printf("    Successfully loaded weights for %d classes: %v\n", len(classNames), classNames)
+		}
+	}
+
+	// 2. Fallback to scanning dataset directory if model weights not yet saved
+	if model == nil {
+		ds, err := ScanDataset("data")
+		if err == nil && ds.Metadata.NumClasses >= 2 {
+			classNames = ds.Metadata.Classes
+			model = NewDiagonNetModel(len(classNames), rand.New(rand.NewSource(42)))
+			fmt.Printf("    Initialized He weights for discovered dataset classes: %v\n", classNames)
+		} else {
+			classNames = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+			model = NewDiagonNetModel(10, rand.New(rand.NewSource(42)))
+			fmt.Printf("    Initialized He weights for standard digits (0-9)\n")
+		}
+	}
+
+	if err := StartInferenceServer(model, classNames, port, true); err != nil {
+		fmt.Printf(">>> [Server Error] %v\n", err)
+	}
 }
 
 func runBenchmark(dataDir string) {
-	fmt.Println(">>> [Benchmark Mode] Initializing manifold and standard benchmark suite...")
-	fmt.Printf("    Benchmark Data Path : %s\n", dataDir)
-	fmt.Printf("    Parallel Workers    : %d\n", NumWorkers())
-	fmt.Println(">>> Benchmark suite ready.")
+	fmt.Println(">>> [Benchmark Mode] Initializing comparative architecture benchmark...")
+	_, err := RunArchitectureBenchmark(dataDir, 15, 32, 0.002, filepath.Join("assets", "comparison_results.csv"))
+	if err != nil {
+		fmt.Printf(">>> [Benchmark Error] %v\n", err)
+		return
+	}
+	fmt.Println(">>> Architecture benchmark completed successfully.")
 }
 
 func main() {
