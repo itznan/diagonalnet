@@ -3926,15 +3926,31 @@ type TrainableModel interface {
 	RestoreWeights(snapshot [][]float32)
 }
 
-// SimpleCNNModel implements a standard 1-channel convolutional baseline without manifold calculus.
+// SimpleCNNModel implements a 1-channel convolutional baseline without manifold calculus.
+//
+// It deliberately mirrors DiagonNetModel layer for layer, differing only in the input: raw
+// grayscale [1 x S x S] instead of the 13-channel spatial difference manifold. Keeping the depth
+// identical is what makes the benchmark meaningful — otherwise the reported delta measures the
+// architecture gap between a deep net and a shallow one, not the contribution of the manifold.
 type SimpleCNNModel struct {
 	NumClasses int
-	Conv       *Conv2DLayer
-	ReLU       *ReLULayer
-	Pool       *AdaptiveAvgPool2DLayer
-	Dropout    *DropoutLayer
-	FC         *LinearLayer
-	LossFn     *CategoricalCrossEntropyLoss
+
+	Conv1 *Conv2DLayer
+	ReLU1 *ReLULayer
+	Pool1 *MaxPool2DLayer
+
+	Conv2 *Conv2DLayer
+	ReLU2 *ReLULayer
+	Pool2 *MaxPool2DLayer
+
+	Pool *AdaptiveAvgPool2DLayer
+
+	FC1     *LinearLayer
+	ReLU3   *ReLULayer
+	Dropout *DropoutLayer
+	FC      *LinearLayer
+
+	LossFn *CategoricalCrossEntropyLoss
 }
 
 // NewSimpleCNNModel constructs a 1-channel baseline convolutional model.
@@ -3942,29 +3958,36 @@ func NewSimpleCNNModel(numClasses int, rng *rand.Rand) *SimpleCNNModel {
 	if rng == nil {
 		rng = rand.New(rand.NewSource(42))
 	}
-	conv := NewConv2DLayer(1, 16, 3, 2, 1, rng)
-	pool := NewAdaptiveAvgPool2DLayer(4, 4)
-	dropout := NewDropoutLayer(0.2, rng)
-	fc := NewLinearLayer(16*4*4, numClasses, rng)
-	lossFn := NewCategoricalCrossEntropyLoss()
+	flatDim := diagonConv2Channels * diagonPoolTarget * diagonPoolTarget
 
 	return &SimpleCNNModel{
 		NumClasses: numClasses,
-		Conv:       conv,
-		ReLU:       NewReLULayer(),
-		Pool:       pool,
-		Dropout:    dropout,
-		FC:         fc,
-		LossFn:     lossFn,
+
+		Conv1: NewConv2DLayer(1, diagonConv1Channels, 3, 1, 1, rng),
+		ReLU1: NewReLULayer(),
+		Pool1: NewMaxPool2DLayer(2),
+
+		Conv2: NewConv2DLayer(diagonConv1Channels, diagonConv2Channels, 3, 1, 1, rng),
+		ReLU2: NewReLULayer(),
+		Pool2: NewMaxPool2DLayer(2),
+
+		Pool: NewAdaptiveAvgPool2DLayer(diagonPoolTarget, diagonPoolTarget),
+
+		FC1:     NewLinearLayer(flatDim, diagonHiddenUnits, rng),
+		ReLU3:   NewReLULayer(),
+		Dropout: NewDropoutLayer(0.2, rng),
+		FC:      NewLinearLayer(diagonHiddenUnits, numClasses, rng),
+
+		LossFn: NewCategoricalCrossEntropyLoss(),
 	}
 }
 
 func (m *SimpleCNNModel) Parameters() []*Parameter {
 	return []*Parameter{
-		m.Conv.Weights,
-		m.Conv.Bias,
-		m.FC.Weights,
-		m.FC.Biases,
+		m.Conv1.Weights, m.Conv1.Bias,
+		m.Conv2.Weights, m.Conv2.Bias,
+		m.FC1.Weights, m.FC1.Biases,
+		m.FC.Weights, m.FC.Biases,
 	}
 }
 
@@ -3994,37 +4017,48 @@ func (m *SimpleCNNModel) RestoreWeights(snapshot [][]float32) {
 }
 
 func (m *SimpleCNNModel) Forward(input *Tensor) []float32 {
-	convOut := m.Conv.Forward(input)
-	reluOut := m.ReLU.ForwardTensor(convOut)
-	poolOut := m.Pool.Forward(reluOut)
-	dropOut := m.Dropout.Forward(poolOut.Data)
-	logits := m.FC.Forward(dropOut)
-	return logits
+	// Raw grayscale only — no manifold expansion. That is the whole point of this baseline.
+	c1 := m.Conv1.Forward(input)
+	a1 := m.ReLU1.ForwardTensor(c1)
+	p1 := m.Pool1.Forward(a1)
+	c2 := m.Conv2.Forward(p1)
+	a2 := m.ReLU2.ForwardTensor(c2)
+	p2 := m.Pool2.Forward(a2)
+	pooled := m.Pool.Forward(p2)
+
+	h := m.FC1.Forward(pooled.Data)
+	hAct := m.ReLU3.Forward(h)
+	hDrop := m.Dropout.Forward(hAct)
+	return m.FC.Forward(hDrop)
 }
 
 func (m *SimpleCNNModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
-	convOut := m.Conv.Forward(input)
-	reluOut := m.ReLU.ForwardTensor(convOut)
-	poolOut := m.Pool.Forward(reluOut)
-	dropOut := m.Dropout.Forward(poolOut.Data)
-	logits := m.FC.Forward(dropOut)
+	logits := m.Forward(input)
 
 	probs := Softmax(logits)
 	loss := m.LossFn.Forward(probs, targetClass)
 
 	gradLogits := SoftmaxCrossEntropyGrad(probs, targetClass)
 	gradDrop := m.FC.Backward(gradLogits)
-	gradPoolData := m.Dropout.Backward(gradDrop)
+	gradAct := m.Dropout.Backward(gradDrop)
+	gradHidden := m.ReLU3.Backward(gradAct)
+	gradPooled := m.FC1.Backward(gradHidden)
 
-	gradPoolTensor := &Tensor{
-		Channels: m.Conv.OutChannels,
+	pooledGrad := &Tensor{
+		Channels: m.Conv2.OutChannels,
 		Height:   m.Pool.TargetH,
 		Width:    m.Pool.TargetW,
-		Data:     gradPoolData,
+		Data:     gradPooled,
 	}
-	gradReLU := m.Pool.Backward(gradPoolTensor)
-	gradConvOut := m.ReLU.BackwardTensor(gradReLU)
-	m.Conv.Backward(gradConvOut)
+	gradP2 := m.Pool.Backward(pooledGrad)
+
+	gradA2 := m.Pool2.Backward(gradP2)
+	gradC2 := m.ReLU2.BackwardTensor(gradA2)
+	gradP1 := m.Conv2.Backward(gradC2)
+
+	gradA1 := m.Pool1.Backward(gradP1)
+	gradC1 := m.ReLU1.BackwardTensor(gradA1)
+	m.Conv1.Backward(gradC1)
 
 	return loss, probs
 }

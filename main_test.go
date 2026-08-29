@@ -2226,8 +2226,8 @@ func TestSimpleCNNModelForwardBackward(t *testing.T) {
 
 	// Check non-zero gradients in parameter buffers
 	params := model.Parameters()
-	if len(params) != 4 {
-		t.Fatalf("expected 4 parameter buffers (ConvW, ConvB, FCW, FCB), got %d", len(params))
+	if len(params) != 8 {
+		t.Fatalf("expected 8 parameter buffers (Conv1W/B, Conv2W/B, FC1W/B, FCW/B), got %d", len(params))
 	}
 	for i, p := range params {
 		var maxGrad float32
