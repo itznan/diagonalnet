@@ -669,3 +669,227 @@ func TestDropoutLayer(t *testing.T) {
 		}
 	}
 }
+
+// 10. ReLU Activation Unit Tests
+func TestReLUScalar(t *testing.T) {
+	if got := ReLU(5.5); got != 5.5 {
+		t.Fatalf("expected ReLU(5.5) == 5.5, got %f", got)
+	}
+	if got := ReLU(-3.2); got != 0.0 {
+		t.Fatalf("expected ReLU(-3.2) == 0.0, got %f", got)
+	}
+	if got := ReLU(0.0); got != 0.0 {
+		t.Fatalf("expected ReLU(0.0) == 0.0, got %f", got)
+	}
+
+	if got := ReLUGrad(2.0, 3.5); got != 3.5 {
+		t.Fatalf("expected ReLUGrad(2.0, 3.5) == 3.5, got %f", got)
+	}
+	if got := ReLUGrad(-2.0, 3.5); got != 0.0 {
+		t.Fatalf("expected ReLUGrad(-2.0, 3.5) == 0.0, got %f", got)
+	}
+}
+
+func TestReLULayerForwardAndBackward(t *testing.T) {
+	relu := NewReLULayer()
+	input := []float32{-2.5, -0.5, 0.0, 1.2, 3.8, -10.0, 7.5}
+	expectedOutput := []float32{0.0, 0.0, 0.0, 1.2, 3.8, 0.0, 7.5}
+
+	output := relu.Forward(input)
+	for i, val := range output {
+		if val != expectedOutput[i] {
+			t.Fatalf("ReLU forward mismatch at index %d: expected %f, got %f", i, expectedOutput[i], val)
+		}
+	}
+
+	gradOutput := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0}
+	expectedGradInput := []float32{0.0, 0.0, 0.0, 4.0, 5.0, 0.0, 7.0}
+
+	gradInput := relu.Backward(gradOutput)
+	for i, val := range gradInput {
+		if val != expectedGradInput[i] {
+			t.Fatalf("ReLU backward mismatch at index %d: expected %f, got %f", i, expectedGradInput[i], val)
+		}
+	}
+
+	// Numerical Gradient Verification on non-zero points (away from x=0 kink)
+	testInputs := []float32{-3.0, -1.5, 0.5, 2.0, 5.0}
+	target := []float32{1.0, -0.5, 2.0, 1.5, 3.0}
+
+	outTest := relu.Forward(testInputs)
+	gradOutTest := make([]float32, len(testInputs))
+	for i := range testInputs {
+		gradOutTest[i] = outTest[i] - target[i]
+	}
+	anaGrad := relu.Backward(gradOutTest)
+
+	eps := float32(1e-3)
+	for i := range testInputs {
+		orig := testInputs[i]
+
+		testInputs[i] = orig + eps
+		outP := relu.Forward(testInputs)
+		var lossP float32
+		for j := range outP {
+			diff := outP[j] - target[j]
+			lossP += 0.5 * diff * diff
+		}
+
+		testInputs[i] = orig - eps
+		outM := relu.Forward(testInputs)
+		var lossM float32
+		for j := range outM {
+			diff := outM[j] - target[j]
+			lossM += 0.5 * diff * diff
+		}
+
+		testInputs[i] = orig
+		numGrad := (lossP - lossM) / (2.0 * eps)
+
+		if math.Abs(float64(anaGrad[i]-numGrad)) > 1e-2 {
+			t.Fatalf("ReLU numerical gradient mismatch at %d: analytical=%f, numerical=%f", i, anaGrad[i], numGrad)
+		}
+	}
+}
+
+func TestReLULayerTensor(t *testing.T) {
+	relu := NewReLULayer()
+	tensor := NewTensor(2, 2, 2)
+	tensor.Data = []float32{-1.0, 2.0, -3.0, 4.0, 5.0, -6.0, 0.0, 8.0}
+
+	out := relu.ForwardTensor(tensor)
+	expected := []float32{0.0, 2.0, 0.0, 4.0, 5.0, 0.0, 0.0, 8.0}
+
+	for i, v := range out.Data {
+		if v != expected[i] {
+			t.Fatalf("ReLU ForwardTensor mismatch at index %d: expected %f, got %f", i, expected[i], v)
+		}
+	}
+
+	gradOut := NewTensor(2, 2, 2)
+	for i := range gradOut.Data {
+		gradOut.Data[i] = 1.0
+	}
+	gradIn := relu.BackwardTensor(gradOut)
+	expectedGrad := []float32{0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0}
+
+	for i, v := range gradIn.Data {
+		if v != expectedGrad[i] {
+			t.Fatalf("ReLU BackwardTensor mismatch at index %d: expected %f, got %f", i, expectedGrad[i], v)
+		}
+	}
+}
+
+// 11. LeakyReLU Activation Unit Tests
+func TestLeakyReLUScalar(t *testing.T) {
+	alpha := float32(0.01)
+	if got := LeakyReLU(4.0, alpha); got != 4.0 {
+		t.Fatalf("expected LeakyReLU(4.0) == 4.0, got %f", got)
+	}
+	if got := LeakyReLU(-5.0, alpha); math.Abs(float64(got-(-0.05))) > 1e-5 {
+		t.Fatalf("expected LeakyReLU(-5.0) == -0.05, got %f", got)
+	}
+	if got := LeakyReLU(0.0, alpha); got != 0.0 {
+		t.Fatalf("expected LeakyReLU(0.0) == 0.0, got %f", got)
+	}
+
+	if got := LeakyReLUGrad(2.0, 5.0, alpha); got != 5.0 {
+		t.Fatalf("expected LeakyReLUGrad(2.0, 5.0) == 5.0, got %f", got)
+	}
+	if got := LeakyReLUGrad(-2.0, 5.0, alpha); math.Abs(float64(got-0.05)) > 1e-5 {
+		t.Fatalf("expected LeakyReLUGrad(-2.0, 5.0) == 0.05, got %f", got)
+	}
+}
+
+func TestLeakyReLULayerForwardAndBackward(t *testing.T) {
+	alpha := float32(0.02)
+	leaky := NewLeakyReLULayer(alpha)
+
+	input := []float32{-10.0, -2.0, 0.0, 3.0, 6.0}
+	expectedOutput := []float32{-0.20, -0.04, 0.0, 3.0, 6.0}
+
+	output := leaky.Forward(input)
+	for i, val := range output {
+		diff := math.Abs(float64(val - expectedOutput[i]))
+		if diff > 1e-5 {
+			t.Fatalf("LeakyReLU forward mismatch at %d: expected %f, got %f", i, expectedOutput[i], val)
+		}
+	}
+
+	gradOutput := []float32{1.0, 2.0, 3.0, 4.0, 5.0}
+	expectedGradInput := []float32{0.02, 0.04, 0.06, 4.0, 5.0}
+
+	gradInput := leaky.Backward(gradOutput)
+	for i, val := range gradInput {
+		diff := math.Abs(float64(val - expectedGradInput[i]))
+		if diff > 1e-5 {
+			t.Fatalf("LeakyReLU backward mismatch at %d: expected %f, got %f", i, expectedGradInput[i], val)
+		}
+	}
+
+	// Numerical Gradient Verification across both negative and positive domains
+	testInputs := []float32{-4.0, -1.0, 1.5, 3.5}
+	target := []float32{-0.1, 0.2, 1.0, 2.0}
+
+	outTest := leaky.Forward(testInputs)
+	gradOutTest := make([]float32, len(testInputs))
+	for i := range testInputs {
+		gradOutTest[i] = outTest[i] - target[i]
+	}
+	anaGrad := leaky.Backward(gradOutTest)
+
+	eps := float32(1e-3)
+	for i := range testInputs {
+		orig := testInputs[i]
+
+		testInputs[i] = orig + eps
+		outP := leaky.Forward(testInputs)
+		var lossP float32
+		for j := range outP {
+			diff := outP[j] - target[j]
+			lossP += 0.5 * diff * diff
+		}
+
+		testInputs[i] = orig - eps
+		outM := leaky.Forward(testInputs)
+		var lossM float32
+		for j := range outM {
+			diff := outM[j] - target[j]
+			lossM += 0.5 * diff * diff
+		}
+
+		testInputs[i] = orig
+		numGrad := (lossP - lossM) / (2.0 * eps)
+
+		if math.Abs(float64(anaGrad[i]-numGrad)) > 1e-2 {
+			t.Fatalf("LeakyReLU numerical gradient mismatch at %d: analytical=%f, numerical=%f", i, anaGrad[i], numGrad)
+		}
+	}
+}
+
+func TestLeakyReLULayerTensor(t *testing.T) {
+	leaky := NewLeakyReLULayer(0.1)
+	tensor := NewTensor(1, 2, 2)
+	tensor.Data = []float32{-5.0, 10.0, -20.0, 30.0}
+
+	out := leaky.ForwardTensor(tensor)
+	expected := []float32{-0.5, 10.0, -2.0, 30.0}
+
+	for i, v := range out.Data {
+		if math.Abs(float64(v-expected[i])) > 1e-5 {
+			t.Fatalf("LeakyReLU ForwardTensor mismatch at index %d: expected %f, got %f", i, expected[i], v)
+		}
+	}
+
+	gradOut := NewTensor(1, 2, 2)
+	gradOut.Data = []float32{2.0, 2.0, 2.0, 2.0}
+	gradIn := leaky.BackwardTensor(gradOut)
+	expectedGrad := []float32{0.2, 2.0, 0.2, 2.0}
+
+	for i, v := range gradIn.Data {
+		if math.Abs(float64(v-expectedGrad[i])) > 1e-5 {
+			t.Fatalf("LeakyReLU BackwardTensor mismatch at index %d: expected %f, got %f", i, expectedGrad[i], v)
+		}
+	}
+}
+

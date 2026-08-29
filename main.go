@@ -1164,6 +1164,212 @@ func (l *DropoutLayer) BackwardInto(gradOutput []float32, gradInput []float32) {
 	}
 }
 
+// ReLU calculates the Rectified Linear Unit activation scalar: max(0, x).
+func ReLU(x float32) float32 {
+	if x > 0 {
+		return x
+	}
+	return 0
+}
+
+// ReLUGrad calculates the analytical gradient of ReLU: gy if x > 0 else 0.
+func ReLUGrad(x, gy float32) float32 {
+	if x > 0 {
+		return gy
+	}
+	return 0
+}
+
+// ReLULayer implements Rectified Linear Unit activation with analytical Jacobian backpropagation.
+// Forward:  y_i = max(0, x_i)
+// Backward: dL/dx_i = dL/dy_i if x_i > 0 else 0
+type ReLULayer struct {
+	LastInput []float32
+}
+
+// NewReLULayer constructs a new ReLU activation layer.
+func NewReLULayer() *ReLULayer {
+	return &ReLULayer{}
+}
+
+// Forward computes y_i = max(0, x_i) for flat slice inputs.
+func (l *ReLULayer) Forward(input []float32) []float32 {
+	out := make([]float32, len(input))
+	l.ForwardInto(input, out)
+	return out
+}
+
+// ForwardInto computes ReLU into a pre-allocated destination slice.
+func (l *ReLULayer) ForwardInto(input []float32, output []float32) {
+	if len(l.LastInput) != len(input) {
+		l.LastInput = make([]float32, len(input))
+	}
+	copy(l.LastInput, input)
+
+	for i, x := range input {
+		if x > 0 {
+			output[i] = x
+		} else {
+			output[i] = 0
+		}
+	}
+}
+
+// Backward computes analytical Jacobian gradient dL/dx_i = dL/dy_i if x_i > 0 else 0.
+func (l *ReLULayer) Backward(gradOutput []float32) []float32 {
+	gradInput := make([]float32, len(gradOutput))
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto computes ReLU analytical Jacobian gradient into a pre-allocated gradInput slice.
+func (l *ReLULayer) BackwardInto(gradOutput []float32, gradInput []float32) {
+	for i, gy := range gradOutput {
+		if l.LastInput[i] > 0 {
+			gradInput[i] = gy
+		} else {
+			gradInput[i] = 0
+		}
+	}
+}
+
+// ForwardTensor executes ReLU forward pass over a 3D Tensor.
+func (l *ReLULayer) ForwardTensor(input *Tensor) *Tensor {
+	out := NewTensor(input.Channels, input.Height, input.Width)
+	l.ForwardTensorInto(input, out)
+	return out
+}
+
+// ForwardTensorInto executes ReLU forward pass into a pre-allocated 3D Tensor.
+func (l *ReLULayer) ForwardTensorInto(input *Tensor, output *Tensor) {
+	if output.Channels != input.Channels || output.Height != input.Height || output.Width != input.Width {
+		*output = *NewTensor(input.Channels, input.Height, input.Width)
+	}
+	l.ForwardInto(input.Data, output.Data)
+}
+
+// BackwardTensor executes ReLU analytical gradient backpropagation over a 3D Tensor.
+func (l *ReLULayer) BackwardTensor(gradOutput *Tensor) *Tensor {
+	gradInput := NewTensor(gradOutput.Channels, gradOutput.Height, gradOutput.Width)
+	l.BackwardTensorInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardTensorInto executes ReLU analytical gradient backpropagation into a pre-allocated 3D Tensor.
+func (l *ReLULayer) BackwardTensorInto(gradOutput *Tensor, gradInput *Tensor) {
+	if gradInput.Channels != gradOutput.Channels || gradInput.Height != gradOutput.Height || gradInput.Width != gradOutput.Width {
+		*gradInput = *NewTensor(gradOutput.Channels, gradOutput.Height, gradOutput.Width)
+	}
+	l.BackwardInto(gradOutput.Data, gradInput.Data)
+}
+
+// LeakyReLU calculates the Leaky ReLU activation scalar: x if x > 0 else alpha * x.
+func LeakyReLU(x, alpha float32) float32 {
+	if x > 0 {
+		return x
+	}
+	return alpha * x
+}
+
+// LeakyReLUGrad calculates the analytical gradient of Leaky ReLU: gy if x > 0 else alpha * gy.
+func LeakyReLUGrad(x, gy, alpha float32) float32 {
+	if x > 0 {
+		return gy
+	}
+	return alpha * gy
+}
+
+// LeakyReLULayer implements Leaky ReLU activation with analytical Jacobian backpropagation.
+// Forward:  y_i = x_i if x_i > 0 else alpha * x_i
+// Backward: dL/dx_i = dL/dy_i if x_i > 0 else alpha * dL/dy_i
+type LeakyReLULayer struct {
+	Alpha     float32
+	LastInput []float32
+}
+
+// NewLeakyReLULayer constructs a new LeakyReLU activation layer with specified alpha slope (default 0.01).
+func NewLeakyReLULayer(alpha float32) *LeakyReLULayer {
+	if alpha <= 0 {
+		alpha = 0.01
+	}
+	return &LeakyReLULayer{
+		Alpha: alpha,
+	}
+}
+
+// Forward computes y_i = x_i if x_i > 0 else alpha * x_i for flat slice inputs.
+func (l *LeakyReLULayer) Forward(input []float32) []float32 {
+	out := make([]float32, len(input))
+	l.ForwardInto(input, out)
+	return out
+}
+
+// ForwardInto computes LeakyReLU into a pre-allocated destination slice.
+func (l *LeakyReLULayer) ForwardInto(input []float32, output []float32) {
+	if len(l.LastInput) != len(input) {
+		l.LastInput = make([]float32, len(input))
+	}
+	copy(l.LastInput, input)
+
+	alpha := l.Alpha
+	for i, x := range input {
+		if x > 0 {
+			output[i] = x
+		} else {
+			output[i] = alpha * x
+		}
+	}
+}
+
+// Backward computes analytical Jacobian gradient dL/dx_i = dL/dy_i if x_i > 0 else alpha * dL/dy_i.
+func (l *LeakyReLULayer) Backward(gradOutput []float32) []float32 {
+	gradInput := make([]float32, len(gradOutput))
+	l.BackwardInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardInto computes LeakyReLU analytical Jacobian gradient into a pre-allocated gradInput slice.
+func (l *LeakyReLULayer) BackwardInto(gradOutput []float32, gradInput []float32) {
+	alpha := l.Alpha
+	for i, gy := range gradOutput {
+		if l.LastInput[i] > 0 {
+			gradInput[i] = gy
+		} else {
+			gradInput[i] = alpha * gy
+		}
+	}
+}
+
+// ForwardTensor executes LeakyReLU forward pass over a 3D Tensor.
+func (l *LeakyReLULayer) ForwardTensor(input *Tensor) *Tensor {
+	out := NewTensor(input.Channels, input.Height, input.Width)
+	l.ForwardTensorInto(input, out)
+	return out
+}
+
+// ForwardTensorInto executes LeakyReLU forward pass into a pre-allocated 3D Tensor.
+func (l *LeakyReLULayer) ForwardTensorInto(input *Tensor, output *Tensor) {
+	if output.Channels != input.Channels || output.Height != input.Height || output.Width != input.Width {
+		*output = *NewTensor(input.Channels, input.Height, input.Width)
+	}
+	l.ForwardInto(input.Data, output.Data)
+}
+
+// BackwardTensor executes LeakyReLU analytical gradient backpropagation over a 3D Tensor.
+func (l *LeakyReLULayer) BackwardTensor(gradOutput *Tensor) *Tensor {
+	gradInput := NewTensor(gradOutput.Channels, gradOutput.Height, gradOutput.Width)
+	l.BackwardTensorInto(gradOutput, gradInput)
+	return gradInput
+}
+
+// BackwardTensorInto executes LeakyReLU analytical gradient backpropagation into a pre-allocated 3D Tensor.
+func (l *LeakyReLULayer) BackwardTensorInto(gradOutput *Tensor, gradInput *Tensor) {
+	if gradInput.Channels != gradOutput.Channels || gradInput.Height != gradOutput.Height || gradInput.Width != gradOutput.Width {
+		*gradInput = *NewTensor(gradOutput.Channels, gradOutput.Height, gradOutput.Width)
+	}
+	l.BackwardInto(gradOutput.Data, gradInput.Data)
+}
+
 // ============================================================================
 // 8. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
