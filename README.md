@@ -342,7 +342,6 @@ C:\diagonalnet\
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
 ├── data/                   # Dataset storage directory
 ├── scripts/                # Self-elevating Administrator utility batch scripts
-│   ├── allinone.bat        # Master control suite & end-to-end pipeline runner
 │   ├── audit.bat           # Automated dataset health & bounding box audit
 │   ├── build.bat           # One-click static binary builder & test runner
 │   ├── config.bat          # Interactive control panel & configuration dashboard
