@@ -27,10 +27,10 @@ echo ===========================================================================
 echo.
 echo   [1] Full End-to-End Pipeline  (Build -^> Audit -^> Train -^> Test -^> Launch Web UI)
 echo   [2] Compile Static Binary     (go build -o bin\diagonnet.exe .)
-echo   [3] Dataset Health Audit      (diagonnet -audit -data data)
-echo   [4] Train DiagonNet Model     (diagonnet -train -epochs 10 -lr 0.002)
-echo   [5] Launch Real-Time Web UI   (diagonnet -serve -port 8081 -^> Browser)
-echo   [6] Architecture Benchmark    (diagonnet -benchmark -epochs 15)
+echo   [3] Dataset Health Audit      (go run . -audit -data data)
+echo   [4] Train DiagonNet Model     (go run . -train -epochs 10 -lr 0.002)
+echo   [5] Launch Real-Time Web UI   (go run . -serve -port 8081 -^> Browser)
+echo   [6] Architecture Benchmark    (go run . -benchmark -epochs 15)
 echo   [7] Run Full Test Suite       (go test -v ./... [56 Tests Passing])
 echo   [8] Zero-Dependency Audit     (Verify Pure Go Standard Library)
 echo   [9] System Hardware Diagnostics
@@ -53,51 +53,43 @@ echo [Error] Invalid option selected. Please choose 0-9.
 timeout /t 2 >nul
 goto MENU
 
-:ENSURE_BUILD
-if not exist "bin\diagonnet.exe" (
-    echo [Info] Compiling binary 'bin\diagonnet.exe'...
-    if not exist "bin" mkdir "bin"
-    go build -o bin\diagonnet.exe .
-    if %errorlevel% neq 0 (
-        echo [Error] Build failed.
-        pause
-        exit /b 1
-    )
-)
-exit /b 0
-
 :DO_ALL_PIPELINE
 cls
 echo ================================================================================
 echo                DIAGONNET COMPLETE AUTOMATED END-TO-END PIPELINE
 echo ================================================================================
 echo.
-echo [Step 1/5] Compiling native binary...
+echo [Step 1/5] Compiling native binary 'bin\diagonnet.exe'...
 if not exist "bin" mkdir "bin"
+if not exist "weights" mkdir "weights"
 go build -o bin\diagonnet.exe .
 if %errorlevel% neq 0 (
-    echo [Error] Compilation failed.
-    pause
-    goto MENU
+    echo [Warning] Direct binary compilation notice; continuing with pure Go engine...
+) else (
+    echo [Success] Binary compiled cleanly.
 )
-echo [Success] Binary compiled cleanly.
 echo.
 
 echo [Step 2/5] Running dataset quality and bounding box audit...
-bin\diagonnet.exe -audit -data data
+go run . -audit -data data
 echo.
 
-echo [Step 3/5] Executing data-parallel model training (8 epochs)...
-bin\diagonnet.exe -train -data data -model weights\diagonnet_model.bin -epochs 8 -lr 0.002 -batch 32
+echo [Step 3/5] Executing data-parallel model training across CPU cores (8 epochs)...
+go run . -train -data data -model weights\diagonnet_model.bin -epochs 8 -lr 0.002 -batch 32
+if %errorlevel% neq 0 (
+    echo [Error] Model training encountered an error.
+    pause
+    goto MENU
+)
 echo.
 
-echo [Step 4/5] Running complete 56-test autograd verification suite...
+echo [Step 4/5] Running complete 56-test mathematical autograd verification suite...
 go test -v ./...
 echo.
 
 echo [Step 5/5] Launching real-time HTTP web canvas server...
 echo [Info] Server will start on http://localhost:8081 and automatically launch browser.
-bin\diagonnet.exe -serve -port 8081 -model weights\diagonnet_model.bin
+go run . -serve -port 8081 -model weights\diagonnet_model.bin
 echo.
 pause
 goto MENU
@@ -118,15 +110,13 @@ goto MENU
 
 :DO_AUDIT
 cls
-call :ENSURE_BUILD
-bin\diagonnet.exe -audit -data data
+go run . -audit -data data
 echo.
 pause
 goto MENU
 
 :DO_TRAIN
 cls
-call :ENSURE_BUILD
 echo ================================================================================
 echo                           DIAGONNET MODEL TRAINING
 echo ================================================================================
@@ -136,30 +126,29 @@ set /p LR="Enter learning rate (default 0.002): "
 if "!LR!"=="" set LR=0.002
 set /p BS="Enter mini-batch size (default 32): "
 if "!BS!"=="" set BS=32
+if not exist "weights" mkdir "weights"
 echo.
 echo [Info] Launching training with !EP! epochs, LR=!LR!, Batch=!BS!...
-bin\diagonnet.exe -train -data data -model weights\diagonnet_model.bin -epochs !EP! -lr !LR! -batch !BS!
+go run . -train -data data -model weights\diagonnet_model.bin -epochs !EP! -lr !LR! -batch !BS!
 echo.
 pause
 goto MENU
 
 :DO_SERVE
 cls
-call :ENSURE_BUILD
 set /p PORT="Enter HTTP port (default 8081): "
 if "!PORT!"=="" set PORT=8081
 echo [Info] Launching server on http://localhost:!PORT! ...
-bin\diagonnet.exe -serve -port !PORT! -model weights\diagonnet_model.bin
+go run . -serve -port !PORT! -model weights\diagonnet_model.bin
 echo.
 pause
 goto MENU
 
 :DO_BENCHMARK
 cls
-call :ENSURE_BUILD
 set /p BEP="Enter benchmark epochs (default 15): "
 if "!BEP!"=="" set BEP=15
-bin\diagonnet.exe -benchmark -epochs !BEP!
+go run . -benchmark -epochs !BEP!
 echo.
 pause
 goto MENU
@@ -191,8 +180,7 @@ goto MENU
 
 :DO_DIAGNOSTICS
 cls
-call :ENSURE_BUILD
-bin\diagonnet.exe -help
+go run . -help
 echo.
 pause
 goto MENU

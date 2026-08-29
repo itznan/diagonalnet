@@ -4802,22 +4802,168 @@ func runAudit(dataDir string) {
 }
 
 func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSize int) {
-	fmt.Println(">>> [Train Mode] Initializing deep learning training pipeline...")
-	fmt.Printf("    Dataset Directory : %s\n", dataDir)
-	fmt.Printf("    Output Model Path : %s\n", modelPath)
-	fmt.Printf("    Training Epochs   : %d\n", epochs)
-	fmt.Printf("    Learning Rate     : %.4f\n", lr)
-	fmt.Printf("    Batch Size        : %d\n", batchSize)
-	fmt.Printf("    Worker Threads    : %d\n", NumWorkers())
+	fmt.Println("====================================================================================================")
+	fmt.Println("                         DIAGONNET DEEP LEARNING MODEL TRAINING PIPELINE")
+	fmt.Println("====================================================================================================")
+	fmt.Printf(" Dataset Directory : %s\n", dataDir)
+	fmt.Printf(" Target Model Path : %s\n", modelPath)
+	fmt.Printf(" Training Epochs   : %d\n", epochs)
+	fmt.Printf(" Learning Rate     : %.4f\n", lr)
+	fmt.Printf(" Mini-Batch Size   : %d\n", batchSize)
+	fmt.Printf(" Parallel Workers  : %d Logical CPU Cores\n", NumWorkers())
+	fmt.Println("----------------------------------------------------------------------------------------------------")
 
+	// 1. Scan dataset
 	ds, err := ScanDataset(dataDir)
 	if err != nil {
-		fmt.Printf("    [Warning] Dataset scan: %v\n", err)
-	} else {
-		fmt.Printf("    Discovered %d Dynamic Classes (K=%d): %v\n", ds.Metadata.NumClasses, ds.Metadata.NumClasses, ds.Metadata.Classes)
-		fmt.Printf("    Loaded %d Total Training Samples\n", len(ds.Samples))
+		fmt.Printf(">>> [Dataset Error] %v\n", err)
+		return
 	}
-	fmt.Println(">>> Training pipeline ready.")
+	fmt.Printf(" Discovered %d Dynamic Classes (K=%d): %v\n", ds.Metadata.NumClasses, ds.Metadata.NumClasses, ds.Metadata.Classes)
+	fmt.Printf(" Total Discovered Image Files : %d\n", len(ds.Samples))
+
+	// 2. Stratified Train / Validation Split (80% Train, 20% Val)
+	trainItems, valItems := TrainTestSplit(ds.Samples, 0.20, 42)
+
+	loadAndPreprocess := func(items []ImageItem, label string) []Sample {
+		fmt.Printf(" Preprocessing %d %s samples (Bounding Box, Center Pad, Contrast Stretch, 100x100 Resample)... ", len(items), label)
+		start := time.Now()
+		samples := make([]Sample, 0, len(items))
+		for _, it := range items {
+			gray, err := LoadImageFromFile(it.Path)
+			if err != nil {
+				continue
+			}
+			bbox := FindBoundingBox(gray, 10)
+			centered := PadAndCenter(gray, bbox)
+			stretched := ContrastStretch(centered)
+			resized := ResizeBilinear(stretched, 100, 100)
+			tensor := GrayImageToTensor(resized)
+			samples = append(samples, Sample{
+				Input:       tensor,
+				TargetClass: it.ClassIndex,
+			})
+		}
+		fmt.Printf("Done (%.2fs | %d clean samples)\n", time.Since(start).Seconds(), len(samples))
+		return samples
+	}
+
+	trainSamples := loadAndPreprocess(trainItems, "training")
+	valSamples := loadAndPreprocess(valItems, "validation")
+
+	if len(trainSamples) == 0 || len(valSamples) == 0 {
+		fmt.Println(">>> [Error] Insufficient valid training or validation samples.")
+		return
+	}
+
+	// 3. Initialize Model, Optimizer, BatchTrainer, Checkpoint
+	numClasses := ds.Metadata.NumClasses
+	rng := rand.New(rand.NewSource(42))
+	masterModel := NewDiagonNetModel(numClasses, rng)
+	paramCount := CountModelParameters(masterModel.Parameters())
+
+	optimizer := NewAdamOptimizer(masterModel.Parameters(), AdamOptimizerConfig{
+		LearningRate: lr,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+		WeightDecay:  1e-4,
+	})
+
+	trainer := NewBatchTrainer(masterModel, optimizer, NumWorkers())
+	checkpoint := NewModelCheckpoint()
+
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	fmt.Printf(" Model Architecture: 13-Manifold -> Conv2D(13->16, K=3, S=2) -> ReLU -> AdaptiveAvgPool(4x4) -> Linear(256->%d)\n", numClasses)
+	fmt.Printf(" Trainable Parameters: %d float32 weights and biases\n", paramCount)
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	fmt.Println(" Starting Data-Parallel Training Across CPU Cores...")
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+
+	N := len(trainSamples)
+	indices := make([]int, N)
+	for i := 0; i < N; i++ {
+		indices[i] = i
+	}
+	shuffleRng := rand.New(rand.NewSource(42))
+
+	trainStart := time.Now()
+
+	for ep := 1; ep <= epochs; ep++ {
+		epStart := time.Now()
+
+		// Step LR schedule if milestone reached
+		if ep == 8 {
+			optimizer.Config.LearningRate = lr * 0.5
+			fmt.Printf(" >>> [LR Scheduler] Epoch %d: Learning rate adjusted to %.6f (50%%)\n", ep, optimizer.Config.LearningRate)
+		} else if ep == 16 {
+			optimizer.Config.LearningRate = lr * 0.25
+			fmt.Printf(" >>> [LR Scheduler] Epoch %d: Learning rate adjusted to %.6f (25%%)\n", ep, optimizer.Config.LearningRate)
+		}
+
+		// Shuffle training data
+		shuffleRng.Shuffle(N, func(i, j int) {
+			indices[i], indices[j] = indices[j], indices[i]
+		})
+
+		var totalEpochLoss float32
+		var totalEpochAcc float32
+		numBatches := (N + batchSize - 1) / batchSize
+
+		for b := 0; b < numBatches; b++ {
+			start := b * batchSize
+			end := start + batchSize
+			if end > N {
+				end = N
+			}
+			currBatch := make([]Sample, end-start)
+			for i := start; i < end; i++ {
+				currBatch[i-start] = trainSamples[indices[i]]
+			}
+
+			batchLoss, batchAcc := trainer.TrainBatch(currBatch)
+			totalEpochLoss += batchLoss
+			totalEpochAcc += batchAcc
+		}
+
+		avgTrainLoss := totalEpochLoss / float32(numBatches)
+		avgTrainAcc := (totalEpochAcc / float32(numBatches)) * 100.0
+
+		// Evaluate on Validation Set
+		valLoss, valAcc := trainer.Evaluate(valSamples)
+		valAccPct := float64(valAcc) * 100.0
+
+		isBest := checkpoint.Update(masterModel, ep, float64(valAcc))
+		bestTag := ""
+		if isBest {
+			bestTag = " [BEST]"
+		}
+
+		epDuration := time.Since(epStart).Seconds()
+		fmt.Printf(" Epoch [%2d/%2d] | Train Loss: %.4f (Acc: %5.1f%%) | Val Loss: %.4f (Acc: %5.1f%%) | Time: %5.2fs%s\n",
+			ep, epochs, avgTrainLoss, avgTrainAcc, valLoss, valAccPct, epDuration, bestTag)
+	}
+
+	totalTrainDuration := time.Since(trainStart).Seconds()
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	fmt.Printf(" Training Completed in %.2f seconds (%.2fs / epoch).\n", totalTrainDuration, totalTrainDuration/float64(epochs))
+
+	// Restore best checkpoint weights
+	checkpoint.RestoreBest(masterModel)
+	fmt.Printf(" Restored optimal weights from Epoch %d (Best Validation Accuracy: %.2f%%).\n",
+		checkpoint.BestEpoch, checkpoint.BestValAcc*100.0)
+
+	// Compute & Print Comprehensive Multi-Class Evaluation Report
+	evalReport := ComputeEvaluationMetrics(masterModel, valSamples, ds.Metadata.Classes)
+	PrintEvaluationReport(evalReport)
+
+	// Save binary model weights
+	if err := SaveModelWeights(modelPath, masterModel.Parameters(), ds.Metadata.Classes); err != nil {
+		fmt.Printf(">>> [Save Error] Failed to save weights to %s: %v\n", modelPath, err)
+	} else {
+		fmt.Printf(">>> Successfully serialized best model weights (DIAGON01) to: %s\n", modelPath)
+	}
+	fmt.Println("====================================================================================================")
 }
 
 func runServer(modelPath string, port int) {

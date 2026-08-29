@@ -20,19 +20,8 @@ echo   Mode: Administrator Execution (Pure Go Zero-Dep Engine)
 echo ====================================================================
 echo.
 
-:: 3. Build executable if missing
-if not exist "bin\diagonnet.exe" (
-    echo [Info] Building binary 'bin\diagonnet.exe'...
-    go build -o bin\diagonnet.exe .
-    if %errorlevel% neq 0 (
-        echo [Error] Failed to compile DiagonNet binary.
-        pause
-        exit /b %errorlevel%
-    )
-)
-
-:: 4. Run Dataset Audit
-bin\diagonnet.exe -audit -data data
+:: 3. Run Dataset Audit
+go run . -audit -data data
 
 echo.
 echo ====================================================================

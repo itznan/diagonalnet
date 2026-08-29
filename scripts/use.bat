@@ -20,20 +20,9 @@ echo   Mode: Administrator Execution (Sub-8ms Real-Time Inference)
 echo ====================================================================
 echo.
 
-:: 3. Build executable if missing
-if not exist "bin\diagonnet.exe" (
-    echo [Info] Building binary 'bin\diagonnet.exe'...
-    go build -o bin\diagonnet.exe .
-    if %errorlevel% neq 0 (
-        echo [Error] Failed to compile DiagonNet binary.
-        pause
-        exit /b %errorlevel%
-    )
-)
-
-:: 4. Launch Interactive HTTP Server and Auto-Launch Browser
+:: 3. Launch Interactive HTTP Server and Auto-Launch Browser
 echo [Info] Launching inference server on http://localhost:8081 ...
-bin\diagonnet.exe -serve -port 8081 -model weights\diagonnet_model.bin
+go run . -serve -port 8081 -model weights\diagonnet_model.bin
 
 echo.
 pause

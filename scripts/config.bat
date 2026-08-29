@@ -47,24 +47,15 @@ echo [Error] Invalid option selected. Please enter 1-9.
 timeout /t 2 >nul
 goto MENU
 
-:CHECK_BUILD
-if not exist "bin\diagonnet.exe" (
-    echo [Info] Binary not found. Compiling bin\diagonnet.exe...
-    go build -o bin\diagonnet.exe .
-)
-exit /b
-
 :DO_AUDIT
 cls
-call :CHECK_BUILD
-bin\diagonnet.exe -audit -data data
+go run . -audit -data data
 echo.
 pause
 goto MENU
 
 :DO_TRAIN
 cls
-call :CHECK_BUILD
 echo ================================================================================
 echo                           DIAGONNET MODEL TRAINING
 echo ================================================================================
@@ -74,30 +65,29 @@ set /p LR="Enter learning rate (default 0.002): "
 if "!LR!"=="" set LR=0.002
 set /p BS="Enter mini-batch size (default 32): "
 if "!BS!"=="" set BS=32
+if not exist "weights" mkdir "weights"
 echo.
 echo [Info] Launching data-parallel training: Epochs=!EP!, LR=!LR!, Batch=!BS!...
-bin\diagonnet.exe -train -data data -model weights\diagonnet_model.bin -epochs !EP! -lr !LR! -batch !BS!
+go run . -train -data data -model weights\diagonnet_model.bin -epochs !EP! -lr !LR! -batch !BS!
 echo.
 pause
 goto MENU
 
 :DO_SERVE
 cls
-call :CHECK_BUILD
 set /p PORT="Enter HTTP server port (default 8081): "
 if "!PORT!"=="" set PORT=8081
 echo [Info] Launching inference server on http://localhost:!PORT! ...
-bin\diagonnet.exe -serve -port !PORT! -model weights\diagonnet_model.bin
+go run . -serve -port !PORT! -model weights\diagonnet_model.bin
 echo.
 pause
 goto MENU
 
 :DO_BENCHMARK
 cls
-call :CHECK_BUILD
 set /p BEP="Enter benchmark epochs (default 15): "
 if "!BEP!"=="" set BEP=15
-bin\diagonnet.exe -benchmark -epochs !BEP!
+go run . -benchmark -epochs !BEP!
 echo.
 pause
 goto MENU
@@ -113,6 +103,7 @@ goto MENU
 :DO_BUILD
 cls
 echo [Info] Compiling native binary bin\diagonnet.exe...
+if not exist "bin" mkdir "bin"
 go build -o bin\diagonnet.exe .
 if %errorlevel% equ 0 (
     echo [Success] Successfully compiled bin\diagonnet.exe
@@ -142,8 +133,7 @@ goto MENU
 
 :DO_DIAGNOSTICS
 cls
-call :CHECK_BUILD
-bin\diagonnet.exe -help
+go run . -help
 echo.
 pause
 goto MENU

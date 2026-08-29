@@ -20,24 +20,15 @@ echo   Mode: Administrator Execution (Multi-Core CPU Data-Parallelism)
 echo ====================================================================
 echo.
 
-:: 3. Build executable if missing
-if not exist "bin\diagonnet.exe" (
-    echo [Info] Building binary 'bin\diagonnet.exe'...
-    go build -o bin\diagonnet.exe .
-    if %errorlevel% neq 0 (
-        echo [Error] Failed to compile DiagonNet binary.
-        pause
-        exit /b %errorlevel%
-    )
-)
+if not exist "weights" mkdir "weights"
 
-:: 4. Run Training with parameters or defaults
+:: 3. Run Training with parameters or defaults
 if "%~1"=="" (
     echo [Info] Running default training: 10 Epochs, LR=0.002, Batch=32
-    bin\diagonnet.exe -train -data data -model weights\diagonnet_model.bin -epochs 10 -lr 0.002 -batch 32
+    go run . -train -data data -model weights\diagonnet_model.bin -epochs 10 -lr 0.002 -batch 32
 ) else (
     echo [Info] Running custom training parameters: %*
-    bin\diagonnet.exe -train %*
+    go run . -train %*
 )
 
 echo.

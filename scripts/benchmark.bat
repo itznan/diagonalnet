@@ -20,24 +20,13 @@ echo   Mode: Administrator Execution (Comparative Evaluation Suite)
 echo ====================================================================
 echo.
 
-:: 3. Build executable if missing
-if not exist "bin\diagonnet.exe" (
-    echo [Info] Building binary 'bin\diagonnet.exe'...
-    go build -o bin\diagonnet.exe .
-    if %errorlevel% neq 0 (
-        echo [Error] Failed to compile DiagonNet binary.
-        pause
-        exit /b %errorlevel%
-    )
-)
-
-:: 4. Run Benchmark
+:: 3. Run Benchmark
 if "%~1"=="" (
     echo [Info] Running 15-epoch comparative benchmark...
-    bin\diagonnet.exe -benchmark -epochs 15
+    go run . -benchmark -epochs 15
 ) else (
     echo [Info] Running benchmark with custom parameters: %*
-    bin\diagonnet.exe -benchmark %*
+    go run . -benchmark %*
 )
 
 echo.
