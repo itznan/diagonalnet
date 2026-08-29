@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
-[![Tests](https://img.shields.io/badge/Tests-27%20Passing-success)](main_test.go)
+[![Tests](https://img.shields.io/badge/Tests-40%20Passing-success)](main_test.go)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](README.md)
 
 > **Pure Go Zero-Dependency Deep Learning Engine, 13-Channel Spatial Difference Manifold Calculus & High-Performance CPU Runtime.**
@@ -15,15 +15,18 @@ GitHub Repository: [https://github.com/itznan/diagonalnet](https://github.com/it
 
 - [Overview](#overview)
 - [Zero-Dependency Philosophy](#zero-dependency-philosophy)
+- [Problem & Solution Matrix](#problem--solution-matrix)
 - [Completed Architecture & Capabilities](#completed-architecture--capabilities)
   - [1. Hardware Topology & Multi-Core Concurrency](#1-hardware-topology--multi-core-concurrency)
   - [2. Contiguous 1D/3D Tensor Engine](#2-contiguous-1d3d-tensor-engine)
   - [3. Trainable Parameter Abstraction & He Initialization](#3-trainable-parameter-abstraction--he-initialization)
-  - [4. Lock-Free Parallel Gradient Reduction](#4-lock-free-parallel-gradient-reduction)
-  - [5. Binary Weight Serialization (`DIAGON01`)](#5-binary-weight-serialization-diagon01)
-  - [6. 13-Channel Spatial Difference Manifold Calculus](#6-13-channel-spatial-difference-manifold-calculus)
-  - [7. Neural Network Layers & Analytical Jacobian Autograd](#7-neural-network-layers--analytical-jacobian-autograd)
-  - [8. Dual-Mode CLI Routing Subsystem](#8-dual-mode-cli-routing-subsystem)
+  - [4. Adam Optimizer & Step Learning Rate Decay Scheduler](#4-adam-optimizer--step-learning-rate-decay-scheduler)
+  - [5. Lock-Free Parallel Gradient Reduction](#5-lock-free-parallel-gradient-reduction)
+  - [6. Binary Weight Serialization (`DIAGON01`)](#6-binary-weight-serialization-diagon01)
+  - [7. Dataset Scanner, Grayscale Loading, Stratified Splitting & Health Auditor](#7-dataset-scanner-grayscale-loading-stratified-splitting--health-auditor)
+  - [8. 13-Channel Spatial Difference Manifold Calculus](#8-13-channel-spatial-difference-manifold-calculus)
+  - [9. Neural Network Layers & Analytical Jacobian Autograd](#9-neural-network-layers--analytical-jacobian-autograd)
+  - [10. Dual-Mode CLI Routing Subsystem](#10-dual-mode-cli-routing-subsystem)
 - [Unit Testing & Numerical Gradient Verification](#unit-testing--numerical-gradient-verification)
 - [Project Directory Structure](#project-directory-structure)
 - [Getting Started & CLI Usage](#getting-started--cli-usage)
@@ -49,25 +52,45 @@ DiagonNet does not rely on PyTorch, TensorFlow, OpenCV, NumPy, scikit-learn, or 
 
 ---
 
+## Problem & Solution Matrix
+
+| # | Technical Challenge & Block | Engineering Solution in DiagonNet |
+| :-: | :--- | :--- |
+| 1 | **Heavyweight Framework Dependency Hell & Deployment Bloat**<br>Standard ML stacks require gigabytes of Python packages (`torch`, `tensorflow`, `cv2`, `numpy`, `sklearn`), dynamic linkers, and C++ shared runtimes, creating fragile deployments, massive memory footprints, and security audit hurdles. | **100% Pure Go Zero-Dependency Core**<br>Every tensor operation, layer, Jacobian backpropagation pass, optimizer, and I/O serializer is written from scratch using only the Go standard library, producing a single, self-contained, high-performance static binary (<3 MB). |
+| 2 | **Hardcoded Classes & Rigid Dataset Topologies**<br>Traditional codebases hardcode label arrays and class counts, failing when applied to novel datasets or varying category numbers. | **Dataset-Agnostic Filesystem Scanner & Dynamic Two-Way Mapping**<br>Automatically discovers classes from filesystem subdirectories (`data/*`), builds deterministic two-way $0 \dots K-1$ bi-directional mappings (`ClassToIdx`, `IdxToClass`), and configures the classification head dynamically to $K$ classes. |
+| 3 | **Dataset Class Imbalance & Skewed Validation Sets**<br>Standard random train/test splitting leads to severe class distribution disparities, unrepresentative validation sets, and skewed metrics. | **Stratified Train / Validation Splitter**<br>Groups items by class label and extracts $\lfloor N_c \cdot \text{testRatio} \rfloor$ samples per class, guaranteeing perfectly balanced representation across splits with deterministic pseudo-random shuffling. |
+| 4 | **Corrupt, Blank, and Tiny Drawing Artifacts**<br>Dataset anomalies (corrupt files, 100% blank scans, tiny 5-pixel outlier marks) silently pollute training gradients and degrade classification performance. | **Automated Dataset Health & Quality Auditor (`-audit`)**<br>Computes foreground stroke statistics, detects corrupt/blank/tiny outliers, evaluates average bounding boxes, aspect ratios, and stroke densities, and prints formatted diagnostic tables. |
+| 5 | **Spatial & Directional Representation Bottleneck**<br>Standard 1-channel or 3-channel convolutional architectures struggle to capture non-local diagonal textures and discrete spatial derivatives without deep networks. | **13-Channel Spatial Difference Manifold Calculus**<br>Precomputes an analytical 13-channel manifold comprising base grayscale intensity ($Ch_0$), 4 immediate diagonal differential operators ($Ch_{1-4}$), and all 8 chess knight-move differential operators ($Ch_{5-12}$) in parallel across CPU rows. |
+| 6 | **Softmax Floating-Point Overflow & NaN Hazards**<br>Computing $\exp(z_i)$ directly causes IEEE-754 single-precision overflow ($+\infty$) and `NaN` values whenever logits exceed $\approx 88.7$. | **Max-Logit Subtracted Stable Exponentiation**<br>Subtracts the maximum logit $m = \max_j z_j$ prior to exponentiation ($e_i = \exp(z_i - m)$), guaranteeing mathematical invariance, bounded exponents ($\le 0$), and zero overflow risks. |
+| 7 | **Cross-Entropy Zero-Probability Singularity**<br>When model predicts $p_{\text{target}} = 0$, $-\ln(0)$ yields $-\infty$ (or NaN) during training loss computation. | **Epsilon-Bounded Categorical Cross-Entropy**<br>Applies strict boundary stabilization $-\ln(p_{\text{target}} + 10^{-15})$ coupled with direct analytical pre-softmax logit gradients $\frac{\partial \mathcal{L}}{\partial z_i} = p_i - \mathbf{1}(i = \text{target})$. |
+| 8 | **Initial Adam Step Bias & Weight Explosion**<br>Exponential moving averages of 1st and 2nd moments ($m_t, v_t$) start initialized at zero, causing severe step underestimation in early training epochs, and unconstrained weights lead to overfitting. | **Analytical Bias Corrections & $L_2$ Weight Decay**<br>Applies exact time-step power corrections $\hat{m}_t = \frac{m_t}{1 - \beta_1^t}$ and $\hat{v}_t = \frac{v_t}{1 - \beta_2^t}$ alongside integrated $L_2$ gradient penalty $g_t \leftarrow g_t + \lambda \theta_t$ ($\lambda = 10^{-4}$). |
+| 9 | **Fixed Learning Rate Coarse Convergence Stalling**<br>A static learning rate oscillates around local minima in later epochs or converges too slowly in early phases. | **Configurable Step Milestone LR Decay Scheduler**<br>Dynamically scales learning rates across training milestones (e.g. $\alpha_0 = 0.002 \to 50\% \to 25\%$) configurable via external JSON settings files with clean stdout logging. |
+| 10 | **CPU Multi-Core Mutex Contention Bottlenecks**<br>Parallel gradient reduction across multiple worker replicas typically suffers from mutex lock contention and false cache sharing. | **Lock-Free Contiguous Chunk Partitioning**<br>Workers write to non-overlapping master memory slices without mutex locks, maximizing CPU L1/L2 cache locality and scaling linearly with logical CPU cores. |
+| 11 | **Enterprise Windows AppLocker / Temp Execution Blocks**<br>On enterprise Windows environments, executing test or runtime binaries out of `%TEMP%` (`AppData\Local\Temp`) is blocked by Application Control policies (`An Application Control policy has blocked this file`). | **In-Workspace Local Binary Execution**<br>All binary builds and test runners execute locally within workspace paths (`bin/` or `.`), fully compliant with enterprise security and application control policies. |
+
+---
+
 ## Completed Architecture & Capabilities
 
 ```mermaid
 flowchart TD
-    A[Input Image Grayscale] --> B[13-Channel Spatial Manifold Generator]
-    B --> C[Channel 0: Base Intensity]
-    B --> D[Channels 1-4: Immediate Diagonals]
-    B --> E[Channels 5-12: 8-Way Chess Knight Operators]
-    C & D & E --> F[Conv2DLayer 13 -> OutC]
-    F --> G[ReLULayer / LeakyReLULayer]
-    G --> H[AdaptiveAvgPool2DLayer TargetH x TargetW]
-    H --> I[LinearLayer Dense Feedforward]
-    I --> J[DropoutLayer Inverted Dropout p=0.2]
-    J --> K[SoftmaxLayer Probability Distribution]
-    K --> L[CategoricalCrossEntropyLoss Criterion]
-    L --> M[Analytical Softmax Logit Gradient dL/dz = p - y]
-    M --> N[Analytical Jacobian Backpropagation & Adam Optimizer]
-    N --> O[Lock-Free Parallel Gradient Reduction]
-    O --> P[DIAGON01 Binary Model Persistence]
+    A[Filesystem Scanner data/class_name/*] --> B[Automated Health & Quality Auditor]
+    B --> C[Dynamic Bi-Directional Class Mapping K Classes]
+    C --> D[Stratified Train/Val Splitter]
+    D --> E[Pure Stdlib 8-Bit Grayscale Loader]
+    E --> F[13-Channel Spatial Manifold Generator]
+    F --> G[Conv2DLayer 13 -> OutC]
+    G --> H[ReLULayer / LeakyReLULayer]
+    H --> I[AdaptiveAvgPool2DLayer TargetH x TargetW]
+    I --> J[LinearLayer Dense Head -> K Outputs]
+    J --> K[DropoutLayer Inverted Dropout p=0.2]
+    K --> L[SoftmaxLayer Probability Distribution]
+    L --> M[CategoricalCrossEntropyLoss Criterion]
+    M --> N[Analytical Softmax Logit Gradient dL/dz = p - y]
+    N --> O[Analytical Jacobian Backpropagation]
+    O --> P[Lock-Free Parallel Gradient Reduction]
+    P --> Q[Adam Optimizer & Step LR Scheduler]
+    Q --> R[DIAGON01 Binary Model Persistence]
 ```
 
 ### 1. Hardware Topology & Multi-Core Concurrency
@@ -89,16 +112,35 @@ flowchart TD
   $$\sigma = \sqrt{\frac{2}{\text{fan\_in}}}, \quad z = \sigma \cdot \sqrt{-2 \ln u_1} \cos(2\pi u_2) \quad \text{(Box-Muller transform)}$$
 - **Zero & Constant Initialization**: Helper routines for bias vectors and deterministic unit testing.
 
-### 4. Lock-Free Parallel Gradient Reduction
+### 4. Adam Optimizer & Step Learning Rate Decay Scheduler
+- **Adam Mathematical Formulations for Step $t$**:
+  - $L_2$ Regularized Gradient: $g_t \leftarrow g_t + \lambda \theta_t$ ($\lambda = 10^{-4}$)
+  - 1st Moment (Mean): $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$ ($\beta_1 = 0.9$)
+  - 2nd Raw Moment (Uncentered Variance): $v_t = \beta_2 v_{t-1} + (1 - \beta_2) g_t^2$ ($\beta_2 = 0.999$)
+  - Bias Corrections: $\hat{m}_t = \frac{m_t}{1 - \beta_1^t}, \quad \hat{v}_t = \frac{v_t}{1 - \beta_2^t}$
+  - Parameter Update: $\theta_{t+1} = \theta_t - \frac{\alpha \cdot \hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} \quad (\epsilon = 10^{-8})$
+- **Step Learning Rate Decay Scheduler**:
+  - Milestone decay rules: Initial $\alpha_0 = 0.002$, Epochs 8–16 decay to $50\%$ ($\alpha = 0.001$), Epochs 17+ decay to $25\%$ ($\alpha = 0.0005$).
+  - Configurable via JSON settings files (`SaveStepLRSchedulerConfig`, `LoadStepLRSchedulerConfig`).
+  - Clear stdout milestone transition logging.
+
+### 5. Lock-Free Parallel Gradient Reduction
 - **Chunk Partitioning**: Aggregates gradients from parallel worker replicas into master parameters using partitioned contiguous chunks across Goroutines (`ReduceParameterGradients`, `ReduceGradients`).
 - **Zero Mutex Contention**: Workers write to non-overlapping master memory slices without locking overhead.
 
-### 5. Binary Weight Serialization (`DIAGON01`)
+### 6. Binary Weight Serialization (`DIAGON01`)
 - **Custom File Format**: Fast, portable binary format with magic header verification (`DIAGON01`).
 - **Class Metadata**: JSON-encoded class name metadata header with explicit byte-length prefix.
 - **Contiguous Payloads**: Little-endian IEEE 754 `float32` binary serialization (`SaveModelWeights`, `LoadModelWeights`).
 
-### 6. 13-Channel Spatial Difference Manifold Calculus
+### 7. Dataset Scanner, Grayscale Loading, Stratified Splitting & Health Auditor
+- **Dataset-Agnostic Filesystem Scanner**: Discovers all immediate subdirectories as distinct categories and parses `.png`, `.jpg`, `.jpeg` image files (`ScanDataset`).
+- **Deterministic Bi-Directional Class Mapping**: Maps class names alphabetically to integers $0 \dots K-1$ (`DatasetMetadata`, `ClassToIdx`, `IdxToClass`).
+- **Native Image Loading & Grayscale Conversion**: Decodes PNG/JPEG files into 8-bit luminosity `*image.Gray` and normalizes to $[0.0, 1.0]$ `Tensor` (`LoadImageFromFile`, `GrayImageToTensor`).
+- **Stratified Train/Val Splitting**: Splits datasets with exact proportional representation per class ($\lfloor N_c \cdot \text{testRatio} \rfloor$) and deterministic pseudo-random shuffling (`TrainTestSplit`).
+- **Automated Health & Quality Auditor (`--audit`)**: Identifies corrupt files, 100% blank images, and tiny outlier drawings ($<30$ pixels), computes average bounding boxes, aspect ratios, and stroke densities, and outputs clean tabular reports (`AuditDataset`, `PrintAuditReport`).
+
+### 8. 13-Channel Spatial Difference Manifold Calculus
 Transforms a 1-channel grayscale image into a 13-channel spatial difference manifold in parallel across CPU rows:
 - **Channel 0**: Base normalized grayscale intensity $I(x, y)$.
 - **Channels 1–4 (Immediate Diagonals)**: Absolute directional gradients:
@@ -108,7 +150,7 @@ Transforms a 1-channel grayscale image into a 13-channel spatial difference mani
   $$\mathcal{K} = \{ (-2, -1), (-2, +1), (-1, -2), (-1, +2), (+1, -2), (+1, +2), (+2, -1), (+2, +1) \}$$
 - **Parallelization**: Multi-threaded row slicing using `ComputeManifoldIntoSlice` and `ComputeManifoldTensor`.
 
-### 7. Neural Network Layers & Analytical Jacobian Autograd
+### 9. Neural Network Layers & Analytical Jacobian Autograd
 All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardInto`) for zero-allocation training loops:
 - **`Conv2DLayer`**:
   - Multi-channel 2D convolution with configurable kernel size $K$, stride $S$, and padding $P$.
@@ -134,7 +176,7 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
   - Inverted Bernoulli dropout regularization (default $p = 0.2$, scaling factor $\frac{1}{1-p} = 1.25$).
   - Exact gradient scaling during training mode and zero-overhead identity passthrough during evaluation mode.
 
-### 8. Dual-Mode CLI Routing Subsystem
+### 10. Dual-Mode CLI Routing Subsystem
 - **Flexible Argument Parsing**: Supports both Unix-style command flags and standard positional subcommands:
   - `train` / `-train`: Launch deep learning training pipeline.
   - `serve` / `-serve`: Start the interactive HTTP inference and dashboard runtime.
@@ -181,6 +223,23 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 | `TestCategoricalCrossEntropyValues` | Cross-Entropy scalar loss evaluation and boundary safety ($\epsilon = 10^{-15}$) | `PASS` |
 | `TestCategoricalCrossEntropyOneHot` | Consistency between one-hot distribution and scalar class index loss | `PASS` |
 | `TestSoftmaxCrossEntropyAnalyticalGradients` | **Numerical gradient verification** for composite Softmax logit gradients | `PASS` |
+| `TestAdamOptimizerSingleStep` | Theoretical single-step moment tracking & bias correction accuracy | `PASS` |
+| `TestAdamOptimizerConvergence` | Convergence of quadratic convex loss to minimum | `PASS` |
+| `TestAdamOptimizerMultiParamAndZeroGrad` | Multi-parameter buffer zeroing and optimization updates | `PASS` |
+| `TestAdamL2WeightDecayRegularization` | $L_2$ weight decay gradient regularization ($g_t + \lambda \theta_t$) | `PASS` |
+| `TestAdamAnalyticalBiasCorrectionsMultiStep` | Multi-step analytical moment bias corrections ($\hat{m}_t, \hat{v}_t$) | `PASS` |
+| `TestStepLRSchedulerDefaultSchedule` | Milestone decay (1.0 -> 0.5 -> 0.25) and stdout logging verification | `PASS` |
+| `TestStepLRSchedulerJSONPersistence` | JSON settings file serialization & dynamic config loading | `PASS` |
+| `TestDatasetMetadataTwoWayMapping` | Alphabetical class sorting, dynamic $K$ indexing, and two-way map lookups | `PASS` |
+| `TestScanDatasetValidFilesystem` | Multi-class directory scanning, extension filtering, sample collection | `PASS` |
+| `TestScanDatasetErrorHandling` | Validation errors for missing paths, <2 classes, and zero valid images | `PASS` |
+| `TestLoadImageFromFileAndTensor` | Pure stdlib PNG/JPEG decoding and $[0.0, 1.0]$ tensor normalization | `PASS` |
+| `TestTrainTestSplitStratification` | Proportional stratified train/val splitting ($\lfloor N_c \cdot r \rfloor$) & deterministic shuffling | `PASS` |
+| `TestAuditDatasetQualityAndStats` | Corrupt, blank, and tiny outlier detection & bounding box geometry audit | `PASS` |
+
+---
+
+## Project Directory Structure
 
 ---
 

@@ -1,6 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"math"
 	"math/rand"
 	"os"
@@ -1073,6 +1077,620 @@ func TestSoftmaxCrossEntropyAnalyticalGradients(t *testing.T) {
 		}
 	}
 }
+
+// 14. Adam Optimizer Unit Tests
+func TestAdamOptimizerSingleStep(t *testing.T) {
+	param := NewParameter(2)
+	param.Data[0] = 5.0
+	param.Data[1] = -2.0
+	param.Grad[0] = 0.5
+	param.Grad[1] = -0.8
+
+	cfg := AdamOptimizerConfig{
+		LearningRate: 0.01,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+		WeightDecay:  0.0,
+	}
+
+	opt := NewAdamOptimizer([]*Parameter{param}, cfg)
+	opt.Step()
+
+	// Verify step count
+	if opt.StepCount != 1 {
+		t.Fatalf("expected step count 1, got %d", opt.StepCount)
+	}
+
+	// Step 1 theoretical values:
+	// For element 0 (g = 0.5):
+	// m1 = (1 - 0.9) * 0.5 = 0.05
+	// v1 = (1 - 0.999) * 0.25 = 0.00025
+	// mHat = 0.05 / 0.1 = 0.5
+	// vHat = 0.00025 / 0.001 = 0.25 -> sqrt(vHat) = 0.5
+	// update = 0.01 * 0.5 / 0.5 = 0.01
+	// new_data = 5.0 - 0.01 = 4.99
+	if math.Abs(float64(param.M[0]-0.05)) > 1e-5 {
+		t.Fatalf("expected m[0] == 0.05, got %f", param.M[0])
+	}
+	if math.Abs(float64(param.V[0]-0.00025)) > 1e-6 {
+		t.Fatalf("expected v[0] == 0.00025, got %f", param.V[0])
+	}
+	if math.Abs(float64(param.Data[0]-4.99)) > 1e-4 {
+		t.Fatalf("expected data[0] == 4.99, got %f", param.Data[0])
+	}
+
+	// For element 1 (g = -0.8, negative):
+	// update = 0.01 * (-0.8) / 0.8 = -0.01
+	// new_data = -2.0 - (-0.01) = -1.99
+	if math.Abs(float64(param.Data[1]-(-1.99))) > 1e-4 {
+		t.Fatalf("expected data[1] == -1.99, got %f", param.Data[1])
+	}
+}
+
+func TestAdamOptimizerConvergence(t *testing.T) {
+	// Minimize quadratic loss: L(w) = 0.5 * (w - 3.0)^2 -> dL/dw = w - 3.0
+	param := NewParameter(1)
+	param.Data[0] = 0.0 // Start at 0.0, optimal is 3.0
+
+	cfg := AdamOptimizerConfig{
+		LearningRate: 0.1,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+	}
+
+	opt := NewAdamOptimizer([]*Parameter{param}, cfg)
+
+	for step := 0; step < 150; step++ {
+		w := param.Data[0]
+		grad := w - 3.0
+		param.Grad[0] = grad
+		opt.Step()
+	}
+
+	finalVal := param.Data[0]
+	if math.Abs(float64(finalVal-3.0)) > 1e-2 {
+		t.Fatalf("Adam optimizer failed to converge to 3.0: final value = %f", finalVal)
+	}
+}
+
+func TestAdamOptimizerMultiParamAndZeroGrad(t *testing.T) {
+	p1 := NewParameter(10)
+	p2 := NewParameter(5)
+
+	for i := range p1.Grad {
+		p1.Grad[i] = 1.0
+	}
+	for i := range p2.Grad {
+		p2.Grad[i] = 2.0
+	}
+
+	opt := NewAdamOptimizer([]*Parameter{p1, p2}, DefaultAdamConfig())
+	opt.ZeroGrad()
+
+	for i, g := range p1.Grad {
+		if g != 0 {
+			t.Fatalf("p1 grad at %d not zeroed: %f", i, g)
+		}
+	}
+	for i, g := range p2.Grad {
+		if g != 0 {
+			t.Fatalf("p2 grad at %d not zeroed: %f", i, g)
+		}
+	}
+}
+
+func TestAdamL2WeightDecayRegularization(t *testing.T) {
+	// Parameter with weight theta = 10.0, raw grad = 0.0, lambda = 0.01
+	// Effective regularized gradient: g_reg = 0.0 + 0.01 * 10.0 = 0.1
+	param := NewParameter(1)
+	param.Data[0] = 10.0
+	param.Grad[0] = 0.0
+
+	cfg := AdamOptimizerConfig{
+		LearningRate: 0.001,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+		WeightDecay:  0.01, // lambda = 0.01
+	}
+
+	opt := NewAdamOptimizer([]*Parameter{param}, cfg)
+	opt.Step()
+
+	// Effective gradient was 0.1. At t=1:
+	// m1 = (1 - 0.9) * 0.1 = 0.01
+	// v1 = (1 - 0.999) * 0.01 = 0.00001
+	// mHat = 0.01 / 0.1 = 0.1
+	// vHat = 0.00001 / 0.001 = 0.01 -> sqrt(vHat) = 0.1
+	// update = 0.001 * 0.1 / 0.1 = 0.001
+	// theta_new = 10.0 - 0.001 = 9.999
+	if math.Abs(float64(param.Data[0]-9.999)) > 1e-4 {
+		t.Fatalf("expected weight decay update to 9.999, got %f", param.Data[0])
+	}
+}
+
+func TestAdamAnalyticalBiasCorrectionsMultiStep(t *testing.T) {
+	// Step-by-step mathematical check of bias corrections across 5 steps with constant gradient
+	param := NewParameter(1)
+	param.Data[0] = 0.0
+	gConst := float32(1.0)
+	lr := float32(0.001)
+	beta1 := float32(0.9)
+	beta2 := float32(0.999)
+	eps := float32(1e-8)
+
+	var m, v float64
+	for step := 1; step <= 5; step++ {
+		param.Grad[0] = gConst
+		StepParameter(param, step, lr, beta1, beta2, eps, 0.0)
+
+		// Manual calculation
+		m = 0.9*m + 0.1*1.0
+		v = 0.999*v + 0.001*1.0
+
+		biasCorr1 := 1.0 - math.Pow(0.9, float64(step))
+		biasCorr2 := 1.0 - math.Pow(0.999, float64(step))
+
+		expectedMHat := m / biasCorr1
+		expectedVHat := v / biasCorr2
+
+		actualM := float64(param.M[0])
+		actualV := float64(param.V[0])
+
+		if math.Abs(actualM-m) > 1e-5 {
+			t.Fatalf("step %d: m mismatch: expected %f, got %f", step, m, actualM)
+		}
+		if math.Abs(actualV-v) > 1e-6 {
+			t.Fatalf("step %d: v mismatch: expected %f, got %f", step, v, actualV)
+		}
+
+		actualMHat := actualM / biasCorr1
+		actualVHat := actualV / biasCorr2
+		if math.Abs(actualMHat-expectedMHat) > 1e-4 {
+			t.Fatalf("step %d: mHat mismatch: expected %f, got %f", step, expectedMHat, actualMHat)
+		}
+		if math.Abs(actualVHat-expectedVHat) > 1e-4 {
+			t.Fatalf("step %d: vHat mismatch: expected %f, got %f", step, expectedVHat, actualVHat)
+		}
+	}
+}
+
+// 15. Step Learning Rate Decay Scheduler Unit Tests
+func TestStepLRSchedulerDefaultSchedule(t *testing.T) {
+	param := NewParameter(1)
+	opt := NewAdamOptimizer([]*Parameter{param}, DefaultAdamConfig())
+	sched := NewStepLRScheduler(opt, DefaultStepLRSchedulerConfig())
+
+	// Epochs 1 to 7: Initial LR = 0.002
+	for epoch := 1; epoch <= 7; epoch++ {
+		lr := sched.Step(epoch)
+		if math.Abs(float64(lr-0.002)) > 1e-6 {
+			t.Fatalf("epoch %d: expected LR 0.002, got %f", epoch, lr)
+		}
+		if math.Abs(float64(opt.Config.LearningRate-0.002)) > 1e-6 {
+			t.Fatalf("epoch %d: optimizer LR mismatch: expected 0.002, got %f", epoch, opt.Config.LearningRate)
+		}
+	}
+
+	// Epochs 8 to 16 (including 8-12): 50% decay -> LR = 0.001
+	for epoch := 8; epoch <= 16; epoch++ {
+		lr := sched.Step(epoch)
+		if math.Abs(float64(lr-0.001)) > 1e-6 {
+			t.Fatalf("epoch %d: expected LR 0.001 (50%% decay), got %f", epoch, lr)
+		}
+		if math.Abs(float64(opt.Config.LearningRate-0.001)) > 1e-6 {
+			t.Fatalf("epoch %d: optimizer LR mismatch: expected 0.001, got %f", epoch, opt.Config.LearningRate)
+		}
+	}
+
+	// Epochs 17+: 25% decay -> LR = 0.0005
+	for epoch := 17; epoch <= 25; epoch++ {
+		lr := sched.Step(epoch)
+		if math.Abs(float64(lr-0.0005)) > 1e-6 {
+			t.Fatalf("epoch %d: expected LR 0.0005 (25%% decay), got %f", epoch, lr)
+		}
+		if math.Abs(float64(opt.Config.LearningRate-0.0005)) > 1e-6 {
+			t.Fatalf("epoch %d: optimizer LR mismatch: expected 0.0005, got %f", epoch, opt.Config.LearningRate)
+		}
+	}
+}
+
+func TestStepLRSchedulerJSONPersistence(t *testing.T) {
+	tempDir := filepath.Join(os.TempDir(), "diagonnet_scheduler_test")
+	_ = os.RemoveAll(tempDir)
+	defer os.RemoveAll(tempDir)
+
+	configPath := filepath.Join(tempDir, "scheduler_settings.json")
+
+	customCfg := StepLRSchedulerConfig{
+		InitialLR: 0.005,
+		Milestones: []LRMilestone{
+			{Epoch: 5, Factor: 0.5},
+			{Epoch: 10, Factor: 0.1},
+		},
+	}
+
+	if err := SaveStepLRSchedulerConfig(configPath, &customCfg); err != nil {
+		t.Fatalf("SaveStepLRSchedulerConfig failed: %v", err)
+	}
+
+	loadedCfg, err := LoadStepLRSchedulerConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadStepLRSchedulerConfig failed: %v", err)
+	}
+
+	if loadedCfg.InitialLR != 0.005 || len(loadedCfg.Milestones) != 2 {
+		t.Fatalf("loaded config mismatch: %+v", loadedCfg)
+	}
+	if loadedCfg.Milestones[0].Epoch != 5 || loadedCfg.Milestones[0].Factor != 0.5 {
+		t.Fatalf("milestone 0 mismatch")
+	}
+
+	param := NewParameter(1)
+	opt := NewAdamOptimizer([]*Parameter{param}, DefaultAdamConfig())
+	sched, err := NewStepLRSchedulerFromFile(opt, configPath)
+	if err != nil {
+		t.Fatalf("NewStepLRSchedulerFromFile failed: %v", err)
+	}
+
+	if sched.GetLR(1) != 0.005 {
+		t.Fatalf("expected LR 0.005 at epoch 1, got %f", sched.GetLR(1))
+	}
+	if sched.GetLR(5) != 0.0025 {
+		t.Fatalf("expected LR 0.0025 at epoch 5, got %f", sched.GetLR(5))
+	}
+	if math.Abs(float64(sched.GetLR(10)-0.0005)) > 1e-6 {
+		t.Fatalf("expected LR 0.0005 at epoch 10, got %f", sched.GetLR(10))
+	}
+}
+
+// 16. Dynamic Dataset Scanner & Bi-Directional Class Mapping Unit Tests
+func TestDatasetMetadataTwoWayMapping(t *testing.T) {
+	rawClasses := []string{"triangle", "circle", "square"}
+	meta := NewDatasetMetadata(rawClasses)
+
+	// Check alphabetical sort order
+	if len(meta.Classes) != 3 {
+		t.Fatalf("expected 3 classes, got %d", len(meta.Classes))
+	}
+	if meta.Classes[0] != "circle" || meta.Classes[1] != "square" || meta.Classes[2] != "triangle" {
+		t.Fatalf("classes not sorted alphabetically: %v", meta.Classes)
+	}
+	if meta.NumClasses != 3 {
+		t.Fatalf("expected NumClasses 3, got %d", meta.NumClasses)
+	}
+
+	// Verify ClassToIdx
+	if meta.ClassToIdx["circle"] != 0 || meta.ClassToIdx["square"] != 1 || meta.ClassToIdx["triangle"] != 2 {
+		t.Fatalf("invalid ClassToIdx mapping: %+v", meta.ClassToIdx)
+	}
+
+	// Verify IdxToClass
+	if meta.IdxToClass[0] != "circle" || meta.IdxToClass[1] != "square" || meta.IdxToClass[2] != "triangle" {
+		t.Fatalf("invalid IdxToClass mapping: %+v", meta.IdxToClass)
+	}
+
+	// Verify accessor methods
+	idx, ok := meta.GetClassIndex("square")
+	if !ok || idx != 1 {
+		t.Fatalf("GetClassIndex failed for square: got %d, %v", idx, ok)
+	}
+	name, ok := meta.GetClassName(2)
+	if !ok || name != "triangle" {
+		t.Fatalf("GetClassName failed for index 2: got %s, %v", name, ok)
+	}
+
+	// Verify missing lookups
+	if _, ok := meta.GetClassIndex("unknown"); ok {
+		t.Fatalf("expected unknown class lookup to fail")
+	}
+	if _, ok := meta.GetClassName(99); ok {
+		t.Fatalf("expected out-of-bounds index lookup to fail")
+	}
+}
+
+func TestScanDatasetValidFilesystem(t *testing.T) {
+	tempDir := filepath.Join(os.TempDir(), "diagonnet_dataset_test")
+	_ = os.RemoveAll(tempDir)
+	defer os.RemoveAll(tempDir)
+
+	// Create 3 subdirectories: dog, cat, bird
+	classes := []string{"dog", "cat", "bird"}
+	for _, c := range classes {
+		cDir := filepath.Join(tempDir, c)
+		if err := os.MkdirAll(cDir, 0755); err != nil {
+			t.Fatalf("failed to create class dir: %v", err)
+		}
+		// Create mock image files
+		_ = os.WriteFile(filepath.Join(cDir, "img1.png"), []byte{0x89, 0x50, 0x4E, 0x47}, 0644)
+		_ = os.WriteFile(filepath.Join(cDir, "img2.JPG"), []byte{0xFF, 0xD8, 0xFF}, 0644)
+		_ = os.WriteFile(filepath.Join(cDir, "img3.jpeg"), []byte{0xFF, 0xD8, 0xFF}, 0644)
+		// Non-image file that should be ignored
+		_ = os.WriteFile(filepath.Join(cDir, "notes.txt"), []byte("ignore me"), 0644)
+	}
+
+	ds, err := ScanDataset(tempDir)
+	if err != nil {
+		t.Fatalf("ScanDataset failed: %v", err)
+	}
+
+	// 3 classes: bird (0), cat (1), dog (2)
+	if ds.Metadata.NumClasses != 3 {
+		t.Fatalf("expected 3 classes, got %d", ds.Metadata.NumClasses)
+	}
+	if ds.Metadata.Classes[0] != "bird" || ds.Metadata.Classes[1] != "cat" || ds.Metadata.Classes[2] != "dog" {
+		t.Fatalf("unexpected sorted classes: %v", ds.Metadata.Classes)
+	}
+
+	// Total images: 3 per class * 3 classes = 9 images
+	if len(ds.Samples) != 9 {
+		t.Fatalf("expected 9 samples, got %d", len(ds.Samples))
+	}
+
+	// Verify sample labels match class metadata
+	for _, s := range ds.Samples {
+		expectedIdx := ds.Metadata.ClassToIdx[s.Class]
+		if s.ClassIndex != expectedIdx {
+			t.Fatalf("sample classIndex mismatch for path %s: got %d, expected %d", s.Path, s.ClassIndex, expectedIdx)
+		}
+		if !IsValidImageExtension(s.Path) {
+			t.Fatalf("sample has invalid image extension: %s", s.Path)
+		}
+	}
+}
+
+func TestScanDatasetErrorHandling(t *testing.T) {
+	// 1. Non-existent directory
+	_, err := ScanDataset("C:/non_existent_directory_diagonnet_12345")
+	if err == nil {
+		t.Fatalf("expected error for non-existent directory")
+	}
+
+	// 2. Directory with only 1 class (< 2 classes)
+	tempDir := filepath.Join(os.TempDir(), "diagonnet_dataset_err1")
+	_ = os.RemoveAll(tempDir)
+	defer os.RemoveAll(tempDir)
+
+	_ = os.MkdirAll(filepath.Join(tempDir, "only_one_class"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "only_one_class", "a.png"), []byte("png"), 0644)
+
+	_, err = ScanDataset(tempDir)
+	if err == nil {
+		t.Fatalf("expected error for directory with only 1 class")
+	}
+
+	// 3. Directory with subdirectories containing 0 valid images
+	tempDir2 := filepath.Join(os.TempDir(), "diagonnet_dataset_err2")
+	_ = os.RemoveAll(tempDir2)
+	defer os.RemoveAll(tempDir2)
+
+	_ = os.MkdirAll(filepath.Join(tempDir2, "class_a"), 0755)
+	_ = os.MkdirAll(filepath.Join(tempDir2, "class_b"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir2, "class_a", "readme.txt"), []byte("no images"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir2, "class_b", "readme.txt"), []byte("no images"), 0644)
+
+	_, err = ScanDataset(tempDir2)
+	if err == nil {
+		t.Fatalf("expected error for classes containing zero images")
+	}
+}
+
+// 17. Native Image Loading & Grayscale Conversion Unit Tests (Prompt 31)
+func TestLoadImageFromFileAndTensor(t *testing.T) {
+	tempDir := filepath.Join(os.TempDir(), "diagonnet_img_test")
+	_ = os.RemoveAll(tempDir)
+	defer os.RemoveAll(tempDir)
+	_ = os.MkdirAll(tempDir, 0755)
+
+	imgFile := filepath.Join(tempDir, "test.png")
+	rgba := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			rgba.Set(x, y, color.RGBA{R: uint8(x * 7), G: uint8(y * 7), B: 128, A: 255})
+		}
+	}
+
+	f, err := os.Create(imgFile)
+	if err != nil {
+		t.Fatalf("failed to create image file: %v", err)
+	}
+	if err := png.Encode(f, rgba); err != nil {
+		_ = f.Close()
+		t.Fatalf("failed to encode png: %v", err)
+	}
+	_ = f.Close()
+
+	gray, err := LoadImageFromFile(imgFile)
+	if err != nil {
+		t.Fatalf("LoadImageFromFile failed: %v", err)
+	}
+
+	if gray.Bounds().Dx() != 32 || gray.Bounds().Dy() != 32 {
+		t.Fatalf("unexpected gray bounds: %v", gray.Bounds())
+	}
+
+	tensor := GrayImageToTensor(gray)
+	if tensor.Channels != 1 || tensor.Height != 32 || tensor.Width != 32 {
+		t.Fatalf("tensor shape mismatch: [%d, %d, %d]", tensor.Channels, tensor.Height, tensor.Width)
+	}
+
+	// Verify normalization within [0.0, 1.0]
+	for i, v := range tensor.Data {
+		if v < 0.0 || v > 1.0 {
+			t.Fatalf("pixel at %d out of normalized range: %f", i, v)
+		}
+	}
+}
+
+// 18. Stratified Train/Test Dataset Splitting Unit Tests (Prompt 32)
+func TestTrainTestSplitStratification(t *testing.T) {
+	var items []ImageItem
+	// Class 0: 40 items
+	for i := 0; i < 40; i++ {
+		items = append(items, ImageItem{Path: fmt.Sprintf("c0_%d.png", i), Class: "circle", ClassIndex: 0})
+	}
+	// Class 1: 30 items
+	for i := 0; i < 30; i++ {
+		items = append(items, ImageItem{Path: fmt.Sprintf("c1_%d.png", i), Class: "square", ClassIndex: 1})
+	}
+	// Class 2: 30 items
+	for i := 0; i < 30; i++ {
+		items = append(items, ImageItem{Path: fmt.Sprintf("c2_%d.png", i), Class: "triangle", ClassIndex: 2})
+	}
+
+	testRatio := 0.20
+	seed := int64(12345)
+	trainSet, valSet := TrainTestSplit(items, testRatio, seed)
+
+	// Total validation count: floor(40*0.2) + floor(30*0.2) + floor(30*0.2) = 8 + 6 + 6 = 20
+	// Total train count: (40-8) + (30-6) + (30-6) = 32 + 24 + 24 = 80
+	if len(valSet) != 20 {
+		t.Fatalf("expected 20 validation samples, got %d", len(valSet))
+	}
+	if len(trainSet) != 80 {
+		t.Fatalf("expected 80 train samples, got %d", len(trainSet))
+	}
+
+	// Verify exact class counts in valSet
+	valCounts := make(map[int]int)
+	for _, item := range valSet {
+		valCounts[item.ClassIndex]++
+	}
+	if valCounts[0] != 8 || valCounts[1] != 6 || valCounts[2] != 6 {
+		t.Fatalf("stratified val class counts mismatch: %+v", valCounts)
+	}
+
+	// Verify exact class counts in trainSet
+	trainCounts := make(map[int]int)
+	for _, item := range trainSet {
+		trainCounts[item.ClassIndex]++
+	}
+	if trainCounts[0] != 32 || trainCounts[1] != 24 || trainCounts[2] != 24 {
+		t.Fatalf("stratified train class counts mismatch: %+v", trainCounts)
+	}
+
+	// Verify deterministic repeatability with same seed
+	train2, val2 := TrainTestSplit(items, testRatio, seed)
+	for i := range trainSet {
+		if trainSet[i].Path != train2[i].Path {
+			t.Fatalf("train split non-deterministic at %d", i)
+		}
+	}
+	for i := range valSet {
+		if valSet[i].Path != val2[i].Path {
+			t.Fatalf("val split non-deterministic at %d", i)
+		}
+	}
+}
+
+// 19. Automated Dataset Health & Quality Auditor Unit Tests (Prompt 33)
+func TestAuditDatasetQualityAndStats(t *testing.T) {
+	tempDir := filepath.Join(os.TempDir(), "diagonnet_audit_test")
+	_ = os.RemoveAll(tempDir)
+	defer os.RemoveAll(tempDir)
+
+	c1 := filepath.Join(tempDir, "class_a")
+	c2 := filepath.Join(tempDir, "class_b")
+	_ = os.MkdirAll(c1, 0755)
+	_ = os.MkdirAll(c2, 0755)
+
+	savePNG := func(path string, w, h int, drawFunc func(img *image.RGBA)) {
+		rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+		// Fill white background (255)
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				rgba.Set(x, y, color.RGBA{255, 255, 255, 255})
+			}
+		}
+		if drawFunc != nil {
+			drawFunc(rgba)
+		}
+		f, _ := os.Create(path)
+		_ = png.Encode(f, rgba)
+		_ = f.Close()
+	}
+
+	// 1. Normal drawing in class_a (100 foreground pixels)
+	savePNG(filepath.Join(c1, "normal1.png"), 32, 32, func(img *image.RGBA) {
+		for y := 10; y < 20; y++ {
+			for x := 10; x < 20; x++ {
+				img.Set(x, y, color.RGBA{0, 0, 0, 255})
+			}
+		}
+	})
+
+	// 2. Tiny drawing in class_a (< 30 foreground pixels, e.g. 5 pixels)
+	savePNG(filepath.Join(c1, "tiny1.png"), 32, 32, func(img *image.RGBA) {
+		for x := 0; x < 5; x++ {
+			img.Set(x, 0, color.RGBA{0, 0, 0, 255})
+		}
+	})
+
+	// 3. Blank image in class_a (0 foreground pixels)
+	savePNG(filepath.Join(c1, "blank1.png"), 32, 32, nil)
+
+	// 4. Corrupt image in class_a
+	_ = os.WriteFile(filepath.Join(c1, "corrupt1.png"), []byte("not a real png"), 0644)
+
+	// 5. Normal drawings in class_b
+	savePNG(filepath.Join(c2, "normal2.png"), 32, 32, func(img *image.RGBA) {
+		for y := 5; y < 15; y++ {
+			for x := 5; x < 15; x++ {
+				img.Set(x, y, color.RGBA{0, 0, 0, 255})
+			}
+		}
+	})
+	savePNG(filepath.Join(c2, "normal3.png"), 32, 32, func(img *image.RGBA) {
+		for y := 8; y < 18; y++ {
+			for x := 8; x < 18; x++ {
+				img.Set(x, y, color.RGBA{0, 0, 0, 255})
+			}
+		}
+	})
+
+	report, err := AuditDataset(tempDir)
+	if err != nil {
+		t.Fatalf("AuditDataset failed: %v", err)
+	}
+
+	if report.NumClasses != 2 {
+		t.Fatalf("expected 2 classes, got %d", report.NumClasses)
+	}
+	if report.TotalSamples != 6 {
+		t.Fatalf("expected 6 total samples, got %d", report.TotalSamples)
+	}
+	if report.CorruptCount != 1 {
+		t.Fatalf("expected 1 corrupt file, got %d", report.CorruptCount)
+	}
+	if report.BlankCount != 1 {
+		t.Fatalf("expected 1 blank image, got %d", report.BlankCount)
+	}
+	if report.TinyCount != 1 {
+		t.Fatalf("expected 1 tiny outlier, got %d", report.TinyCount)
+	}
+	if report.ValidCount != 3 {
+		t.Fatalf("expected 3 valid images, got %d", report.ValidCount)
+	}
+
+	// Verify bounding box calculation for normal1.png (10x10 bbox)
+	resNormal := AuditImage(filepath.Join(c1, "normal1.png"), "class_a", 0)
+	if resNormal.BBoxWidth != 10 || resNormal.BBoxHeight != 10 {
+		t.Fatalf("normal bbox mismatch: %d x %d", resNormal.BBoxWidth, resNormal.BBoxHeight)
+	}
+	if math.Abs(resNormal.AspectRatio-1.0) > 1e-4 {
+		t.Fatalf("normal aspect ratio mismatch: %f", resNormal.AspectRatio)
+	}
+
+	// Verify PrintAuditReport doesn't panic
+	PrintAuditReport(report)
+}
+
+
+
+
+
 
 
 

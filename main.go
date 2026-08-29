@@ -7,12 +7,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/draw"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -209,6 +214,267 @@ func InitConstant(param *Parameter, val float32) {
 	}
 }
 
+// AdamOptimizerConfig defines hyperparameters for the Adam optimization algorithm.
+type AdamOptimizerConfig struct {
+	LearningRate float32 // Learning rate eta (default: 0.001)
+	Beta1        float32 // 1st moment decay beta_1 (default: 0.9)
+	Beta2        float32 // 2nd raw moment decay beta_2 (default: 0.999)
+	Eps          float32 // Numerical stability epsilon (default: 1e-8)
+	WeightDecay  float32 // Optional L2 weight decay (default: 0.0)
+}
+
+// DefaultAdamConfig returns the standard Adam hyperparameter configuration:
+// lr = 0.001, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, weightDecay = 1e-4 (L2 regularization lambda)
+func DefaultAdamConfig() AdamOptimizerConfig {
+	return AdamOptimizerConfig{
+		LearningRate: 0.001,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+		WeightDecay:  1e-4, // lambda = 10^-4 L2 weight decay regularization
+	}
+}
+
+// AdamOptimizer implements the Adam optimization algorithm with L2 weight decay regularization,
+// 1st (mean) and 2nd (variance) moment tracking, and analytical bias corrections.
+//
+// Formulations for Step t:
+// 1. L2 Regularized Gradient:   g_t <- g_t + lambda * theta_t (lambda = 10^-4)
+// 2. 1st Moment EMA (Mean):     m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
+// 3. 2nd Moment EMA (Variance): v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
+// 4. Analytical Bias Correction:
+//       m_hat_t = m_t / (1 - beta1^t)
+//       v_hat_t = v_t / (1 - beta2^t)
+// 5. Weight Parameter Update:   theta_{t+1} = theta_t - alpha * m_hat_t / (sqrt(v_hat_t) + eps)
+type AdamOptimizer struct {
+	Params    []*Parameter
+	Config    AdamOptimizerConfig
+	StepCount int
+}
+
+// NewAdamOptimizer constructs an Adam optimizer for the specified slice of trainable parameters.
+func NewAdamOptimizer(params []*Parameter, config AdamOptimizerConfig) *AdamOptimizer {
+	if config.Beta1 <= 0 || config.Beta1 >= 1 {
+		config.Beta1 = 0.9
+	}
+	if config.Beta2 <= 0 || config.Beta2 >= 1 {
+		config.Beta2 = 0.999
+	}
+	if config.Eps <= 0 {
+		config.Eps = 1e-8
+	}
+	if config.LearningRate <= 0 {
+		config.LearningRate = 0.001
+	}
+
+	return &AdamOptimizer{
+		Params:    params,
+		Config:    config,
+		StepCount: 0,
+	}
+}
+
+// ZeroGrad resets gradient accumulators for all registered parameters to zero.
+func (opt *AdamOptimizer) ZeroGrad() {
+	for _, p := range opt.Params {
+		if p != nil {
+			p.ZeroGrad()
+		}
+	}
+}
+
+// Step performs a single Adam optimization parameter update across all registered parameters.
+func (opt *AdamOptimizer) Step() {
+	opt.StepCount++
+	t := opt.StepCount
+	lr := opt.Config.LearningRate
+	beta1 := opt.Config.Beta1
+	beta2 := opt.Config.Beta2
+	eps := opt.Config.Eps
+	wd := opt.Config.WeightDecay
+
+	for _, p := range opt.Params {
+		if p == nil {
+			continue
+		}
+		StepParameter(p, t, lr, beta1, beta2, eps, wd)
+	}
+}
+
+// StepParameter executes the Adam parameter update for a single Parameter buffer at time step t.
+func StepParameter(param *Parameter, t int, lr, beta1, beta2, eps, weightDecay float32) {
+	if param == nil || t <= 0 {
+		return
+	}
+	tF := float64(t)
+	b1 := float64(beta1)
+	b2 := float64(beta2)
+	learningRate := float64(lr)
+	epsilon := float64(eps)
+	wd := float64(weightDecay)
+
+	biasCorrection1 := 1.0 - math.Pow(b1, tF)
+	biasCorrection2 := 1.0 - math.Pow(b2, tF)
+
+	L := len(param.Data)
+	for i := 0; i < L; i++ {
+		g := float64(param.Grad[i])
+		if wd > 0 {
+			g += wd * float64(param.Data[i])
+		}
+
+		// 1st moment vector: m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
+		m := b1*float64(param.M[i]) + (1.0-b1)*g
+		param.M[i] = float32(m)
+
+		// 2nd raw moment vector: v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
+		v := b2*float64(param.V[i]) + (1.0-b2)*(g*g)
+		param.V[i] = float32(v)
+
+		// Bias-corrected moment estimates
+		mHat := m / biasCorrection1
+		vHat := v / biasCorrection2
+
+		// Weight update step
+		update := (learningRate * mHat) / (math.Sqrt(vHat) + epsilon)
+		param.Data[i] -= float32(update)
+	}
+}
+
+// LRMilestone defines an epoch threshold and the multiplier factor applied to the initial learning rate.
+type LRMilestone struct {
+	Epoch  int     `json:"epoch"`
+	Factor float32 `json:"factor"`
+}
+
+// StepLRSchedulerConfig defines configurable parameters for the step learning rate decay scheduler.
+type StepLRSchedulerConfig struct {
+	InitialLR  float32       `json:"initial_lr"`
+	Milestones []LRMilestone `json:"milestones"`
+}
+
+// DefaultStepLRSchedulerConfig returns the default milestone decay schedule:
+// Initial LR: alpha_0 = 0.002
+// Epochs 1 - 7:   factor = 1.0  (alpha = 0.002)
+// Epochs 8 - 16:  factor = 0.5  (alpha = 0.001, 50% decay)
+// Epochs 17+:     factor = 0.25 (alpha = 0.0005, 25% decay)
+func DefaultStepLRSchedulerConfig() StepLRSchedulerConfig {
+	return StepLRSchedulerConfig{
+		InitialLR: 0.002,
+		Milestones: []LRMilestone{
+			{Epoch: 8, Factor: 0.5},
+			{Epoch: 17, Factor: 0.25},
+		},
+	}
+}
+
+// SaveStepLRSchedulerConfig saves scheduler settings to a JSON configuration file.
+func SaveStepLRSchedulerConfig(path string, cfg *StepLRSchedulerConfig) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory for scheduler config: %w", err)
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode scheduler config JSON: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// LoadStepLRSchedulerConfig loads scheduler settings from a JSON configuration file.
+func LoadStepLRSchedulerConfig(path string) (*StepLRSchedulerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read scheduler config file: %w", err)
+	}
+	var cfg StepLRSchedulerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to decode scheduler config JSON: %w", err)
+	}
+	return &cfg, nil
+}
+
+// StepLRScheduler manages learning rate milestone decay scheduling during training.
+type StepLRScheduler struct {
+	Optimizer *AdamOptimizer
+	Config    StepLRSchedulerConfig
+	CurrentLR float32
+	LastEpoch int
+}
+
+// NewStepLRScheduler constructs a new StepLRScheduler for an Adam optimizer with the provided config.
+func NewStepLRScheduler(optimizer *AdamOptimizer, config StepLRSchedulerConfig) *StepLRScheduler {
+	if config.InitialLR <= 0 {
+		config.InitialLR = 0.002
+	}
+	sched := &StepLRScheduler{
+		Optimizer: optimizer,
+		Config:    config,
+		CurrentLR: config.InitialLR,
+		LastEpoch: 0,
+	}
+	if optimizer != nil {
+		optimizer.Config.LearningRate = sched.CurrentLR
+	}
+	return sched
+}
+
+// NewStepLRSchedulerFromFile constructs a StepLRScheduler by loading configuration from a JSON file.
+// If the file does not exist, it initializes with DefaultStepLRSchedulerConfig and saves the default config file.
+func NewStepLRSchedulerFromFile(optimizer *AdamOptimizer, configPath string) (*StepLRScheduler, error) {
+	var cfg *StepLRSchedulerConfig
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		defaultCfg := DefaultStepLRSchedulerConfig()
+		_ = SaveStepLRSchedulerConfig(configPath, &defaultCfg)
+		cfg = &defaultCfg
+	} else {
+		loadedCfg, err := LoadStepLRSchedulerConfig(configPath)
+		if err != nil {
+			return nil, err
+		}
+		cfg = loadedCfg
+	}
+	return NewStepLRScheduler(optimizer, *cfg), nil
+}
+
+// GetLR calculates the scheduled learning rate for any specified 1-indexed epoch.
+func (s *StepLRScheduler) GetLR(epoch int) float32 {
+	if epoch <= 0 {
+		epoch = 1
+	}
+	factor := float32(1.0)
+	// Milestones are evaluated in ascending order
+	for _, m := range s.Config.Milestones {
+		if epoch >= m.Epoch {
+			factor = m.Factor
+		}
+	}
+	return s.Config.InitialLR * factor
+}
+
+// Step advances the scheduler to the specified epoch, updates optimizer learning rate,
+// and logs adjustments cleanly to stdout whenever the learning rate changes.
+func (s *StepLRScheduler) Step(epoch int) float32 {
+	s.LastEpoch = epoch
+	newLR := s.GetLR(epoch)
+	oldLR := s.CurrentLR
+
+	if newLR != oldLR {
+		factor := float32(1.0)
+		if s.Config.InitialLR > 0 {
+			factor = newLR / s.Config.InitialLR
+		}
+		fmt.Printf(">>> [LR Scheduler] Epoch %d: Learning rate adjusted from %.6f -> %.6f (scale %.2f)\n", epoch, oldLR, newLR, factor)
+		s.CurrentLR = newLR
+	}
+
+	if s.Optimizer != nil {
+		s.Optimizer.Config.LearningRate = newLR
+	}
+
+	return newLR
+}
+
 // ============================================================================
 // 4. LOCK-FREE PARALLEL GRADIENT REDUCTION
 // ============================================================================
@@ -394,7 +660,524 @@ func LoadModelWeights(path string, params []*Parameter) ([]string, error) {
 }
 
 // ============================================================================
-// 6. 13-CHANNEL SPATIAL DIFFERENCE MANIFOLD CALCULUS
+// 6. DATASET SCANNER & DYNAMIC CLASS MAPPING (PROMPTS 29 & 30)
+// ============================================================================
+
+// DatasetMetadata stores dynamic bi-directional mappings between class names and integer indices.
+type DatasetMetadata struct {
+	Classes    []string       `json:"classes"`      // e.g. ["circle", "square", "triangle"]
+	ClassToIdx map[string]int `json:"class_to_idx"` // "circle" -> 0, "square" -> 1, "triangle" -> 2
+	IdxToClass map[int]string `json:"idx_to_class"` // 0 -> "circle", 1 -> "square", 2 -> "triangle"
+	NumClasses int            `json:"num_classes"`  // K = len(Classes)
+}
+
+// NewDatasetMetadata constructs bi-directional mappings from a slice of class name strings.
+// Class names are sorted alphabetically to ensure 100% deterministic, reproducible index assignments.
+func NewDatasetMetadata(classes []string) DatasetMetadata {
+	sortedClasses := make([]string, len(classes))
+	copy(sortedClasses, classes)
+	sort.Strings(sortedClasses)
+
+	classToIdx := make(map[string]int, len(sortedClasses))
+	idxToClass := make(map[int]string, len(sortedClasses))
+
+	for idx, name := range sortedClasses {
+		classToIdx[name] = idx
+		idxToClass[idx] = name
+	}
+
+	return DatasetMetadata{
+		Classes:    sortedClasses,
+		ClassToIdx: classToIdx,
+		IdxToClass: idxToClass,
+		NumClasses: len(sortedClasses),
+	}
+}
+
+// GetClassIndex returns the integer index for a class name.
+func (m *DatasetMetadata) GetClassIndex(className string) (int, bool) {
+	idx, ok := m.ClassToIdx[className]
+	return idx, ok
+}
+
+// GetClassName returns the class name string for an integer index.
+func (m *DatasetMetadata) GetClassName(classIndex int) (string, bool) {
+	name, ok := m.IdxToClass[classIndex]
+	return name, ok
+}
+
+// ImageSample represents an individual image file path, its class name, and integer class label.
+type ImageSample struct {
+	Path       string `json:"path"`
+	Class      string `json:"class"`
+	ClassIndex int    `json:"class_index"`
+}
+
+// Dataset contains discovered image samples and dynamic class metadata.
+type Dataset struct {
+	Metadata DatasetMetadata `json:"metadata"`
+	Samples  []ImageSample   `json:"samples"`
+}
+
+// IsValidImageExtension returns true if file extension matches .png, .jpg, or .jpeg (case-insensitive).
+func IsValidImageExtension(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+}
+
+// ScanDataset dynamically scans the filesystem directory without hardcoded labels:
+// 1. Reads directory dataDir.
+// 2. Discovers all immediate subdirectories as classes.
+// 3. Scans for .png, .jpg, .jpeg image files inside each class directory.
+// 4. Returns an error if directory contains fewer than 2 valid classes or zero images.
+func ScanDataset(dataDir string) (*Dataset, error) {
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("dataset directory does not exist: %s", dataDir)
+		}
+		return nil, fmt.Errorf("failed to access dataset directory %s: %w", dataDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("dataset path is not a directory: %s", dataDir)
+	}
+
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read dataset directory %s: %w", dataDir, err)
+	}
+
+	var classNames []string
+	classFiles := make(map[string][]string)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			className := entry.Name()
+			subDirPath := filepath.Join(dataDir, className)
+
+			subEntries, err := os.ReadDir(subDirPath)
+			if err != nil {
+				continue
+			}
+
+			var imgPaths []string
+			for _, subEntry := range subEntries {
+				if !subEntry.IsDir() && IsValidImageExtension(subEntry.Name()) {
+					imgPaths = append(imgPaths, filepath.Join(subDirPath, subEntry.Name()))
+				}
+			}
+
+			if len(imgPaths) > 0 {
+				classNames = append(classNames, className)
+				classFiles[className] = imgPaths
+			}
+		}
+	}
+
+	if len(classNames) < 2 {
+		return nil, fmt.Errorf("dataset requires at least 2 valid classes containing images, found %d", len(classNames))
+	}
+
+	metadata := NewDatasetMetadata(classNames)
+	var samples []ImageSample
+
+	for _, className := range metadata.Classes {
+		idx := metadata.ClassToIdx[className]
+		for _, imgPath := range classFiles[className] {
+			samples = append(samples, ImageSample{
+				Path:       imgPath,
+				Class:      className,
+				ClassIndex: idx,
+			})
+		}
+	}
+
+	if len(samples) == 0 {
+		return nil, errors.New("dataset contains zero valid images")
+	}
+
+	return &Dataset{
+		Metadata: metadata,
+		Samples:  samples,
+	}, nil
+}
+
+// ImageItem is an alias for ImageSample representing a dataset item.
+type ImageItem = ImageSample
+
+// LoadImageFromFile opens a PNG or JPEG file from disk, decodes it, and converts it into
+// a standard 8-bit grayscale luminosity representation (*image.Gray) using pure Go standard library.
+func LoadImageFromFile(path string) (*image.Gray, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open image %s: %w", path, err)
+	}
+	defer file.Close()
+
+	src, _, err := image.Decode(file)
+	if err != nil {
+		return nil, fmt.Errorf("decode error on %s: %w", path, err)
+	}
+
+	bounds := src.Bounds()
+	gray := image.NewGray(bounds)
+	draw.Draw(gray, bounds, src, bounds.Min, draw.Src)
+	return gray, nil
+}
+
+// GrayImageToTensor converts an *image.Gray into a 1xHxW Tensor normalized to [0.0, 1.0].
+func GrayImageToTensor(gray *image.Gray) *Tensor {
+	bounds := gray.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	t := NewTensor(1, h, w)
+
+	idx := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			pixel := gray.GrayAt(x, y).Y
+			t.Data[idx] = float32(pixel) / 255.0
+			idx++
+		}
+	}
+	return t
+}
+
+// TrainTestSplit partitions samples into stratified train and validation sets ensuring
+// equal/proportional class representation in both splits according to testRatio.
+//
+// Requirements:
+// 1. Group samples by class label.
+// 2. For each class group of size N_c, assign floor(N_c * testRatio) items to validation set and remaining to train set.
+// 3. Shuffle final splits with deterministic random seed.
+func TrainTestSplit(items []ImageItem, testRatio float64, seed int64) ([]ImageItem, []ImageItem) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if testRatio <= 0 {
+		train := make([]ImageItem, len(items))
+		copy(train, items)
+		return train, nil
+	}
+	if testRatio >= 1.0 {
+		val := make([]ImageItem, len(items))
+		copy(val, items)
+		return nil, val
+	}
+
+	// 1. Group samples by class index
+	classBuckets := make(map[int][]ImageItem)
+	for _, item := range items {
+		classBuckets[item.ClassIndex] = append(classBuckets[item.ClassIndex], item)
+	}
+
+	rng := rand.New(rand.NewSource(seed))
+
+	var trainSet []ImageItem
+	var valSet []ImageItem
+
+	// Sort class keys for 100% reproducible splitting
+	var classKeys []int
+	for k := range classBuckets {
+		classKeys = append(classKeys, k)
+	}
+	sort.Ints(classKeys)
+
+	for _, k := range classKeys {
+		bucket := classBuckets[k]
+		n := len(bucket)
+		if n == 0 {
+			continue
+		}
+
+		// Shuffle bucket elements before splitting
+		shuffled := make([]ImageItem, n)
+		copy(shuffled, bucket)
+		rng.Shuffle(n, func(i, j int) {
+			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+		})
+
+		nVal := int(math.Floor(float64(n) * testRatio))
+		if nVal > n {
+			nVal = n
+		}
+
+		valSet = append(valSet, shuffled[:nVal]...)
+		trainSet = append(trainSet, shuffled[nVal:]...)
+	}
+
+	// 3. Shuffle final splits with deterministic random seed
+	rng.Shuffle(len(trainSet), func(i, j int) {
+		trainSet[i], trainSet[j] = trainSet[j], trainSet[i]
+	})
+	rng.Shuffle(len(valSet), func(i, j int) {
+		valSet[i], valSet[j] = valSet[j], valSet[i]
+	})
+
+	return trainSet, valSet
+}
+
+// ImageAuditResult contains quality analysis for an individual image.
+type ImageAuditResult struct {
+	Path            string
+	Class           string
+	ClassIndex      int
+	IsCorrupt       bool
+	IsBlank         bool
+	IsTiny          bool
+	ForegroundCount int
+	BBoxWidth       int
+	BBoxHeight      int
+	AspectRatio     float64
+	StrokeDensity   float64
+}
+
+// ClassAuditStats holds aggregated metrics for a single class.
+type ClassAuditStats struct {
+	ClassName    string
+	ClassIndex   int
+	TotalSamples int
+	ValidCount   int
+	CorruptCount int
+	BlankCount   int
+	TinyCount    int
+	AvgBBoxW     float64
+	AvgBBoxH     float64
+	AvgAspect    float64
+	AvgDensity   float64
+}
+
+// DatasetAuditReport aggregates health metrics across all classes in the dataset.
+type DatasetAuditReport struct {
+	DataDir      string
+	NumClasses   int
+	Classes      []string
+	TotalSamples int
+	ValidCount   int
+	CorruptCount int
+	BlankCount   int
+	TinyCount    int
+	ClassStats   []ClassAuditStats
+	Results      []ImageAuditResult
+}
+
+// AuditImage performs quality and bounding box analysis on a single image file:
+// 1. Detects unreadable/corrupt image files.
+// 2. Detects 100% blank images (0 foreground pixels).
+// 3. Detects tiny outlier drawings (< 30 foreground pixels).
+// 4. Computes bounding box dimensions, aspect ratio, and stroke density.
+func AuditImage(path string, className string, classIndex int) ImageAuditResult {
+	res := ImageAuditResult{
+		Path:       path,
+		Class:      className,
+		ClassIndex: classIndex,
+	}
+
+	gray, err := LoadImageFromFile(path)
+	if err != nil {
+		res.IsCorrupt = true
+		return res
+	}
+
+	bounds := gray.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	totalPixels := w * h
+	if totalPixels == 0 {
+		res.IsCorrupt = true
+		return res
+	}
+
+	// Compute average intensity to determine background luminosity
+	var sumLum uint64
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			sumLum += uint64(gray.GrayAt(x, y).Y)
+		}
+	}
+	meanLum := float64(sumLum) / float64(totalPixels)
+	isLightBackground := meanLum > 128.0
+
+	minX, maxX := w, -1
+	minY, maxY := h, -1
+	fgCount := 0
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			pix := gray.GrayAt(x, y).Y
+			var isForeground bool
+			if isLightBackground {
+				isForeground = pix < 240
+			} else {
+				isForeground = pix > 15
+			}
+
+			if isForeground {
+				fgCount++
+				relX := x - bounds.Min.X
+				relY := y - bounds.Min.Y
+				if relX < minX {
+					minX = relX
+				}
+				if relX > maxX {
+					maxX = relX
+				}
+				if relY < minY {
+					minY = relY
+				}
+				if relY > maxY {
+					maxY = relY
+				}
+			}
+		}
+	}
+
+	res.ForegroundCount = fgCount
+	if fgCount == 0 {
+		res.IsBlank = true
+		return res
+	}
+	if fgCount < 30 {
+		res.IsTiny = true
+	}
+
+	bboxW := maxX - minX + 1
+	bboxH := maxY - minY + 1
+	res.BBoxWidth = bboxW
+	res.BBoxHeight = bboxH
+
+	if bboxH > 0 {
+		res.AspectRatio = float64(bboxW) / float64(bboxH)
+	} else {
+		res.AspectRatio = 1.0
+	}
+
+	if bboxW*bboxH > 0 {
+		res.StrokeDensity = float64(fgCount) / float64(bboxW*bboxH)
+	}
+
+	return res
+}
+
+// AuditDataset executes a complete health and quality scan over a dataset directory.
+func AuditDataset(dataDir string) (*DatasetAuditReport, error) {
+	ds, err := ScanDataset(dataDir)
+	if err != nil {
+		return nil, err
+	}
+
+	report := &DatasetAuditReport{
+		DataDir:      dataDir,
+		NumClasses:   ds.Metadata.NumClasses,
+		Classes:      ds.Metadata.Classes,
+		TotalSamples: len(ds.Samples),
+	}
+
+	classResults := make(map[int][]ImageAuditResult)
+	for _, sample := range ds.Samples {
+		res := AuditImage(sample.Path, sample.Class, sample.ClassIndex)
+		report.Results = append(report.Results, res)
+		classResults[sample.ClassIndex] = append(classResults[sample.ClassIndex], res)
+
+		if res.IsCorrupt {
+			report.CorruptCount++
+		} else if res.IsBlank {
+			report.BlankCount++
+		} else if res.IsTiny {
+			report.TinyCount++
+		} else {
+			report.ValidCount++
+		}
+	}
+
+	for idx, clsName := range ds.Metadata.Classes {
+		items := classResults[idx]
+		stats := ClassAuditStats{
+			ClassName:    clsName,
+			ClassIndex:   idx,
+			TotalSamples: len(items),
+		}
+
+		var sumW, sumH, sumAspect, sumDensity float64
+		validForGeometry := 0
+
+		for _, item := range items {
+			if item.IsCorrupt {
+				stats.CorruptCount++
+			} else if item.IsBlank {
+				stats.BlankCount++
+			} else {
+				if item.IsTiny {
+					stats.TinyCount++
+				} else {
+					stats.ValidCount++
+				}
+				sumW += float64(item.BBoxWidth)
+				sumH += float64(item.BBoxHeight)
+				sumAspect += item.AspectRatio
+				sumDensity += item.StrokeDensity
+				validForGeometry++
+			}
+		}
+
+		if validForGeometry > 0 {
+			stats.AvgBBoxW = sumW / float64(validForGeometry)
+			stats.AvgBBoxH = sumH / float64(validForGeometry)
+			stats.AvgAspect = sumAspect / float64(validForGeometry)
+			stats.AvgDensity = sumDensity / float64(validForGeometry)
+		}
+
+		report.ClassStats = append(report.ClassStats, stats)
+	}
+
+	return report, nil
+}
+
+// PrintAuditReport prints a clean tabular dataset audit and health report to stdout.
+func PrintAuditReport(report *DatasetAuditReport) {
+	fmt.Println("====================================================================================================")
+	fmt.Println("                              DIAGONNET DATASET AUDIT & HEALTH REPORT")
+	fmt.Println("====================================================================================================")
+	fmt.Printf(" Target Directory   : %s\n", report.DataDir)
+	fmt.Printf(" Discovered Classes : %d %v (K=%d)\n", report.NumClasses, report.Classes, report.NumClasses)
+	fmt.Printf(" Total Samples      : %d | Clean Valid: %d | Corrupt: %d | Blank: %d | Tiny Outliers: %d\n",
+		report.TotalSamples, report.ValidCount, report.CorruptCount, report.BlankCount, report.TinyCount)
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	fmt.Printf(" %-15s | %7s | %5s | %7s | %5s | %4s | %-14s | %-10s | %s\n",
+		"Class Name", "Samples", "Valid", "Corrupt", "Blank", "Tiny", "Avg BBox (WxH)", "Avg Aspect", "Stroke Dens")
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+
+	var totalW, totalH, totalAspect, totalDensity float64
+	validClasses := 0
+
+	for _, s := range report.ClassStats {
+		fmt.Printf(" %-15s | %7d | %5d | %7d | %5d | %4d | %5.1f x %-6.1f | %10.2f | %10.1f%%\n",
+			s.ClassName, s.TotalSamples, s.ValidCount, s.CorruptCount, s.BlankCount, s.TinyCount,
+			s.AvgBBoxW, s.AvgBBoxH, s.AvgAspect, s.AvgDensity*100.0)
+		if s.ValidCount+s.TinyCount > 0 {
+			totalW += s.AvgBBoxW
+			totalH += s.AvgBBoxH
+			totalAspect += s.AvgAspect
+			totalDensity += s.AvgDensity
+			validClasses++
+		}
+	}
+	fmt.Println("----------------------------------------------------------------------------------------------------")
+	avgW, avgH, avgAspect, avgDens := 0.0, 0.0, 0.0, 0.0
+	if validClasses > 0 {
+		avgW = totalW / float64(validClasses)
+		avgH = totalH / float64(validClasses)
+		avgAspect = totalAspect / float64(validClasses)
+		avgDens = totalDensity / float64(validClasses)
+	}
+	fmt.Printf(" %-15s | %7d | %5d | %7d | %5d | %4d | %5.1f x %-6.1f | %10.2f | %10.1f%%\n",
+		"SUMMARY", report.TotalSamples, report.ValidCount, report.CorruptCount, report.BlankCount, report.TinyCount,
+		avgW, avgH, avgAspect, avgDens*100.0)
+	fmt.Println("====================================================================================================")
+}
+
+// ============================================================================
+// 7. 13-CHANNEL SPATIAL DIFFERENCE MANIFOLD CALCULUS
 // ============================================================================
 
 // Clamp restricts val within the closed interval [minVal, maxVal].
@@ -1617,13 +2400,13 @@ func printHelp() {
 }
 
 func runAudit(dataDir string) {
-	fmt.Println(">>> [Audit Mode] Starting dataset validation and integrity audit...")
-	fmt.Printf("    Target Dataset Directory : %s\n", dataDir)
-	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
-		fmt.Printf("    Notice: Dataset directory '%s' does not exist yet. Create it or specify -data.\n", dataDir)
-	} else {
-		fmt.Printf("    Dataset directory '%s' verified.\n", dataDir)
+	fmt.Println(">>> [Audit Mode] Starting dataset validation, quality analysis, and integrity audit...")
+	report, err := AuditDataset(dataDir)
+	if err != nil {
+		fmt.Printf(">>> [Audit Warning/Error] %v\n", err)
+		return
 	}
+	PrintAuditReport(report)
 	fmt.Println(">>> Dataset audit completed.")
 }
 
@@ -1635,6 +2418,14 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	fmt.Printf("    Learning Rate     : %.4f\n", lr)
 	fmt.Printf("    Batch Size        : %d\n", batchSize)
 	fmt.Printf("    Worker Threads    : %d\n", NumWorkers())
+
+	ds, err := ScanDataset(dataDir)
+	if err != nil {
+		fmt.Printf("    [Warning] Dataset scan: %v\n", err)
+	} else {
+		fmt.Printf("    Discovered %d Dynamic Classes (K=%d): %v\n", ds.Metadata.NumClasses, ds.Metadata.NumClasses, ds.Metadata.Classes)
+		fmt.Printf("    Loaded %d Total Training Samples\n", len(ds.Samples))
+	}
 	fmt.Println(">>> Training pipeline ready.")
 }
 
