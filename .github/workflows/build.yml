@@ -1,0 +1,76 @@
+name: Build & Test CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Display Go Version & Environment
+        run: go version
+
+      - name: Verify Zero External Dependencies
+        shell: bash
+        run: |
+          echo "=== 1. Checking Active Go Modules ==="
+          go list -m all
+          MODULE_COUNT=$(go list -m all | wc -l)
+          if [ "$MODULE_COUNT" -ne 1 ]; then
+            echo "Error: External module dependencies detected!"
+            exit 1
+          fi
+          echo "[PASS] Pure Go module with zero third-party dependencies."
+
+      - name: Run Full Mathematical & Autograd Test Suite
+        run: go test -v ./...
+
+      - name: Build Native Binary
+        shell: bash
+        run: |
+          mkdir -p bin
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/diagonalnet.exe .
+          else
+            CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/diagonalnet .
+          fi
+
+      - name: Verify Executable Binary & Diagnostics
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            ./bin/diagonalnet.exe help
+            ./bin/diagonalnet.exe audit -data data
+          else
+            chmod +x ./bin/diagonalnet
+            ./bin/diagonalnet help
+            ./bin/diagonalnet audit -data data
+          fi
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagonalnet-${{ matrix.os }}
+          path: |
+            bin/diagonalnet
+            bin/diagonalnet.exe
+          if-no-files-found: ignore
