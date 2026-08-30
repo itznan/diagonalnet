@@ -18,8 +18,10 @@ assets/*.csv
 assets/*.pdf
 !assets/.gitkeep
 
-# Workspace Keepers
+# Dataset Files & Images
+data/*
 !data/.gitkeep
+
 
 # Temporary & Cache Files
 tmp/

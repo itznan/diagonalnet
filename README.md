@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
 [![Tests](https://img.shields.io/badge/Tests-54%20Passing-success)](main_test.go)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](README.md)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **Pure Go Zero-Dependency Deep Learning Engine, 13-Channel Spatial Difference Manifold Calculus & High-Performance CPU Runtime.**
 
@@ -330,26 +330,19 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 C:\diagonalnet\
 ├── .gitignore              # Comprehensive enterprise ignore rules
 ├── .zero-dep.toml          # Zero-dependency track specification and pitch
+├── LICENSE                 # MIT Open Source License
 ├── Makefile                # Cross-platform single-command build & test runner
 ├── README.md               # Architecture documentation, formulas, and user guide
 ├── STDLIB.md               # Standard library replacements & zero-dep rationale
 ├── TRAINING_HISTORY.md     # Comprehensive training run comparisons, metrics & history
 ├── deps-proof.txt          # Proof log demonstrating zero third-party dependencies
+├── diagonnet.bat           # Unified control panel & CLI automation runner (all-in-one)
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
-├── main.go                 # Engine core, tensor math, layers, autograd, CLI
+├── main.go                 # Engine core, tensor math, layers, autograd, CLI (single file)
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
-├── assets/                 # Visual assets, dataset manifolds
+├── assets/                 # Visual assets, dataset manifolds (.gitkeep)
 ├── bin/                    # Compiled binary outputs (diagonnet.exe)
-├── data/                   # Dataset storage directory
-├── scripts/                # Self-elevating Administrator utility batch scripts
-│   ├── audit.bat           # Automated dataset health & bounding box audit
-│   ├── build.bat           # One-click static binary builder & test runner
-│   ├── config.bat          # Interactive control panel & configuration dashboard
-│   ├── pull.bat            # Git pull automation script
-│   ├── push.bat            # Git push automation script
-│   ├── train.bat           # Multi-profile training hub (Fast/Normal/Hardcore/Manual)
-│   ├── use.bat             # Real-time web canvas server & browser auto-launcher
-│   └── verify_deps.bat     # Zero-dependency audit verification script
+├── data/                   # Dataset storage directory (.gitkeep)
 └── weights/                # Binary model weights storage (DIAGON01 format)
 ```
 
