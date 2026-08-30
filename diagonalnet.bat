@@ -82,7 +82,8 @@ echo.
 echo [2/4] Compiling native binary to bin\diagonalnet.exe...
 echo --------------------------------------------------------------------------------
 if not exist "bin" mkdir "bin"
-go build -o bin\diagonalnet.exe .
+set "CGO_ENABLED=0"
+go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin\diagonalnet.exe .
 if %errorlevel% neq 0 goto CHECK_FAILED
 
 if exist "bin\diagonalnet.exe" (
@@ -392,8 +393,9 @@ exit /b 1
 :ENSURE_BIN
 if not exist "bin" mkdir "bin"
 if exist "bin\diagonalnet.exe" exit /b 0
-echo [Info] Compiling DiagonalNet native binary...
-go build -o bin\diagonalnet.exe .
+echo [Info] Compiling DiagonalNet native binary (reproducible build)...
+set "CGO_ENABLED=0"
+go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin\diagonalnet.exe .
 if %errorlevel% neq 0 (
     echo [Error] Compilation failed.
     exit /b 1
