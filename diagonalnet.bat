@@ -102,7 +102,7 @@ echo.
 
 echo [4/4] Verifying engine subsystems and CLI routing...
 echo --------------------------------------------------------------------------------
-go run . -help >nul 2>&1
+bin\diagonalnet.exe -help >nul 2>&1
 if %errorlevel% neq 0 goto CHECK_FAILED
 echo [PASS] Engine initialization and CLI routing verified successfully.
 echo.
@@ -137,6 +137,7 @@ REM 2. DATASET AUDIT
 REM ============================================================================
 :DO_AUDIT
 cls
+call :ENSURE_BIN
 echo ================================================================================
 echo          DIAGONALNET DATASET HEALTH, QUALITY AND BOUNDING BOX AUDITOR
 echo ================================================================================
@@ -145,16 +146,17 @@ set /p DATA_PATH="Enter dataset directory path [default: data]: "
 if "!DATA_PATH!"=="" set DATA_PATH=data
 echo [Info] Auditing dataset at '!DATA_PATH!'...
 echo.
-go run . -audit -data "!DATA_PATH!"
+bin\diagonalnet.exe -audit -data "!DATA_PATH!"
 echo.
 pause
 goto MAIN_MENU
 
 :CLI_AUDIT
 shift
+call :ENSURE_BIN
 set "DATA_ARG=data"
 if not "%~1"=="" set "DATA_ARG=%~1"
-go run . -audit -data "%DATA_ARG%"
+bin\diagonalnet.exe -audit -data "%DATA_ARG%"
 exit /b %errorlevel%
 
 REM ============================================================================
@@ -189,33 +191,37 @@ goto DO_TRAIN
 
 :TRAIN_FAST
 cls
+call :ENSURE_BIN
 echo [Info] Launching FAST Training Profile (4 Epochs, Batch: 64, LR: 0.0025)...
 echo.
-go run . -train -profile fast -data data -model weights\diagonalnet_model.bin
+bin\diagonalnet.exe -train -profile fast -data data -model weights\diagonalnet_model.bin
 echo.
 pause
 goto DO_TRAIN
 
 :TRAIN_NORMAL
 cls
+call :ENSURE_BIN
 echo [Info] Launching NORMAL Standard Recommended Training (12 Epochs, Batch: 32, LR: 0.0020)...
 echo.
-go run . -train -profile normal -data data -model weights\diagonalnet_model.bin
+bin\diagonalnet.exe -train -profile normal -data data -model weights\diagonalnet_model.bin
 echo.
 pause
 goto DO_TRAIN
 
 :TRAIN_HARDCORE
 cls
+call :ENSURE_BIN
 echo [Info] Launching HARDCORE Maximum Accuracy Deep Training (30 Epochs, Batch: 32, LR: 0.0020, 15x Augmentation)...
 echo.
-go run . -train -profile hardcore -data data -model weights\diagonalnet_model.bin
+bin\diagonalnet.exe -train -profile hardcore -data data -model weights\diagonalnet_model.bin
 echo.
 pause
 goto DO_TRAIN
 
 :TRAIN_MANUAL
 cls
+call :ENSURE_BIN
 echo ================================================================================
 echo                       MANUAL CUSTOM TRAINING CONFIGURATION
 echo ================================================================================
@@ -232,15 +238,16 @@ set /p OUT_MODEL="Output model weights path [default: weights\diagonalnet_model.
 if "!OUT_MODEL!"=="" set OUT_MODEL=weights\diagonalnet_model.bin
 echo.
 echo [Info] Starting manual training with !EP! epochs, LR=!LR!, Batch=!BS!...
-go run . -train -data !DATA_DIR! -model !OUT_MODEL! -epochs !EP! -batch !BS! -lr !LR!
+bin\diagonalnet.exe -train -data !DATA_DIR! -model !OUT_MODEL! -epochs !EP! -batch !BS! -lr !LR!
 echo.
 pause
 goto DO_TRAIN
 
 :CLI_TRAIN
 shift
+call :ENSURE_BIN
 if not exist "weights" mkdir "weights"
-go run . -train %*
+bin\diagonalnet.exe -train %*
 exit /b %errorlevel%
 
 REM ============================================================================
@@ -248,6 +255,7 @@ REM 4. INFERENCE SERVER AND WEB DASHBOARD
 REM ============================================================================
 :DO_SERVE
 cls
+call :ENSURE_BIN
 echo ================================================================================
 echo  DIAGONALNET REAL-TIME NEURAL DRAWING CANVAS AND WEB INFERENCE SERVER
 echo ================================================================================
@@ -258,14 +266,15 @@ set /p MODEL_PATH="Enter model weights path [default: weights\diagonalnet_model.
 if "!MODEL_PATH!"=="" set MODEL_PATH=weights\diagonalnet_model.bin
 echo.
 echo [Info] Launching inference server on http://localhost:!PORT! ...
-go run . -serve -port !PORT! -model "!MODEL_PATH!"
+bin\diagonalnet.exe -serve -port !PORT! -model "!MODEL_PATH!"
 echo.
 pause
 goto MAIN_MENU
 
 :CLI_SERVE
 shift
-go run . -serve %*
+call :ENSURE_BIN
+bin\diagonalnet.exe -serve %*
 exit /b %errorlevel%
 
 REM ============================================================================
@@ -368,7 +377,8 @@ REM ============================================================================
 :DO_DIAGNOSTICS
 :CLI_HELP
 cls
-go run . -help
+call :ENSURE_BIN
+bin\diagonalnet.exe -help
 echo.
 if not "%~1"=="" exit /b 0
 pause
@@ -378,6 +388,17 @@ goto MAIN_MENU
 echo [Error] Unknown subcommand: %~1
 echo Valid subcommands: audit, train, serve, build, check, test, deps, pull, push, help
 exit /b 1
+
+:ENSURE_BIN
+if not exist "bin" mkdir "bin"
+if exist "bin\diagonalnet.exe" exit /b 0
+echo [Info] Compiling DiagonalNet native binary...
+go build -o bin\diagonalnet.exe .
+if %errorlevel% neq 0 (
+    echo [Error] Compilation failed.
+    exit /b 1
+)
+exit /b 0
 
 :DO_EXIT
 cls
