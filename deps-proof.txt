@@ -1,9 +1,9 @@
 ================================================================================
-                     DIAGONNET ZERO-DEPENDENCY PROOF
+                     DIAGONALNET ZERO-DEPENDENCY PROOF
 ================================================================================
 
 1. Module Dependency Graph (`go list -m all`):
-   diagonnet
+   diagonalnet
 
    Result: ZERO external modules required.
 
@@ -39,7 +39,7 @@
    Result: 100% Go Standard Library packages. Zero third-party dependencies.
 
 3. Module Definition (`go.mod`):
-   module diagonnet
+   module diagonalnet
 
    go 1.27.0
 

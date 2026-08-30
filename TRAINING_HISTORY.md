@@ -1,6 +1,6 @@
-# 📊 DiagonNet Model Training History & Evolution
+# 📊 DiagonalNet Model Training History & Evolution
 
-> **Complete chronological record of DiagonNet deep learning training runs, ablation studies, mathematical enhancements, and validation accuracy progression.**
+> **Complete chronological record of DiagonalNet deep learning training runs, ablation studies, mathematical enhancements, and validation accuracy progression.**
 
 ---
 
@@ -39,10 +39,10 @@
 
 ```text
 ====================================================================================================
-                         DIAGONNET DEEP LEARNING MODEL TRAINING PIPELINE
+                         DIAGONALNET DEEP LEARNING MODEL TRAINING PIPELINE
 ====================================================================================================
  Dataset Directory : data
- Target Model Path : weights\diagonnet_model.bin
+ Target Model Path : weights\diagonalnet_model.bin
  Training Epochs   : 15
  Learning Rate     : 0.0020
  Mini-Batch Size   : 32
@@ -84,7 +84,7 @@
 
 ```text
 =======================================================================================
-                       DIAGONNET MODEL EVALUATION REPORT                               
+                       DIAGONALNET MODEL EVALUATION REPORT                               
 =======================================================================================
  Total Samples Tested : 400
  Overall Accuracy     :  90.75% (363 / 400)
@@ -170,11 +170,11 @@ Integrated `crypto/sha256` hashing directly into `-audit` to detect duplicate sa
 
 ```text
 ====================================================================================================
-                         DIAGONNET DEEP LEARNING MODEL TRAINING PIPELINE
+                         DIAGONALNET DEEP LEARNING MODEL TRAINING PIPELINE
 ====================================================================================================
  Training Profile  : Hardcore Deep Profile (30 Epochs, Batch: 32, LR: 0.0020, 15x Augmentation)
  Dataset Directory : data
- Target Model Path : weights\diagonnet_model.bin
+ Target Model Path : weights\diagonalnet_model.bin
  Training Epochs   : 30
  Learning Rate     : 0.0020
  Mini-Batch Size   : 32
@@ -231,7 +231,7 @@ Integrated `crypto/sha256` hashing directly into `-audit` to detect duplicate sa
 
 ```text
 =======================================================================================
-                       DIAGONNET MODEL EVALUATION REPORT                               
+                      DIAGONALNET MODEL EVALUATION REPORT                              
 =======================================================================================
  Total Samples Tested : 400
  Overall Accuracy     :  98.75% (395 / 400)

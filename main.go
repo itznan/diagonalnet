@@ -36,12 +36,12 @@ import (
 
 const banner = `
 ================================================================================
-  ____  _                               _   _      _   
- |  _ \(_) __ _  __ _  ___  _ __   __ _| | | \ | | ___| |_ 
- | | | | |/ _` + "`" + ` |/ _` + "`" + ` |/ _ \| '_ \ / _` + "`" + ` | | |  \| |/ _ \ __|
- | |_| | | (_| | (_| | (_) | | | | (_| | | | |\  |  __/ |_ 
- |____/|_|\__,_|\__, |\___/|_| |_|\__,_|_| |_| \_|\___|\__|
-                |___/                                       
+  ____  _                         _ _   _      _   
+ |  _ \(_) __ _  __ _  ___  _ __   __ _| | \ | | ___| |_ 
+ | | | | |/ _` + "`" + ` |/ _` + "`" + ` |/ _ \| '_ \ / _` + "`" + ` | |  \| |/ _ \ __|
+ | |_| | | (_| | (_| | (_) | | | | (_| | | |\  |  __/ |_ 
+ |____/|_|\__,_|\__, |\___/|_| |_|\__,_|_|_| \_|\___|\__|
+                |___/                                     
  Pure Go Zero-Dependency Deep Learning Engine & Web Runtime
 ================================================================================
 `
@@ -68,7 +68,7 @@ func NumWorkers() int {
 func PrintHardwareDiagnostics() {
 	cores := runtime.NumCPU()
 	fmt.Println("==================================================================")
-	fmt.Println("       DiagonNet Pure Go Deep Learning Engine")
+	fmt.Println("       DiagonalNet Pure Go Deep Learning Engine")
 	fmt.Printf("       CPU Compute Engine: %d Logical Cores Fully Utilized (100%%)\n", cores)
 	fmt.Printf("       OS: %s | Architecture: %s | Go: %s\n", runtime.GOOS, runtime.GOARCH, runtime.Version())
 	fmt.Println("==================================================================")
@@ -513,9 +513,17 @@ func ReduceParameterGradients(master *Parameter, workers []*Parameter, numWorker
 		return
 	}
 
-	if numWorkers <= 0 {
-		numWorkers = len(workers)
+	if L < 4096 || numWorkers <= 1 {
+		for i := 0; i < L; i++ {
+			var sum float32
+			for k := 0; k < len(workers); k++ {
+				sum += workers[k].Grad[i]
+			}
+			master.Grad[i] = sum
+		}
+		return
 	}
+
 	if numWorkers > L {
 		numWorkers = L
 	}
@@ -1987,7 +1995,7 @@ func AuditDataset(dataDir string) (*DatasetAuditReport, error) {
 // PrintAuditReport prints a clean tabular dataset audit and health report to stdout.
 func PrintAuditReport(report *DatasetAuditReport) {
 	fmt.Println("====================================================================================================")
-	fmt.Println("                              DIAGONNET DATASET AUDIT & HEALTH REPORT")
+	fmt.Println("                            DIAGONALNET DATASET AUDIT & HEALTH REPORT")
 	fmt.Println("====================================================================================================")
 	fmt.Printf(" Target Directory   : %s\n", report.DataDir)
 	fmt.Printf(" Discovered Classes : %d %v (K=%d)\n", report.NumClasses, report.Classes, report.NumClasses)
@@ -2103,67 +2111,39 @@ func ComputeManifold(input []float32, h, w int) []float32 {
 	return out
 }
 
-// ComputeManifoldIntoSlice executes the row-parallel 13-channel manifold transformation into a pre-allocated destination slice.
+// ComputeManifoldIntoSlice executes the 13-channel manifold transformation into a pre-allocated destination slice.
 func ComputeManifoldIntoSlice(input []float32, out []float32, h, w int) {
 	hw := h * w
-	numWorkers := runtime.NumCPU()
-	if numWorkers <= 0 {
-		numWorkers = 1
-	}
-	if numWorkers > h {
-		numWorkers = h
-	}
+	for y := 0; y < h; y++ {
+		yOffset := y * w
+		for x := 0; x < w; x++ {
+			pixelIdx := yOffset + x
+			baseVal := input[pixelIdx]
 
-	rowsPerWorker := (h + numWorkers - 1) / numWorkers
-	var wg sync.WaitGroup
+			// Channel 0: Base normalized grayscale intensity
+			out[pixelIdx] = baseVal
 
-	for workerID := 0; workerID < numWorkers; workerID++ {
-		startY := workerID * rowsPerWorker
-		endY := startY + rowsPerWorker
-		if endY > h {
-			endY = h
-		}
-		if startY >= endY {
-			continue
-		}
-
-		wg.Add(1)
-		go func(sy, ey int) {
-			defer wg.Done()
-			for y := sy; y < ey; y++ {
-				yOffset := y * w
-				for x := 0; x < w; x++ {
-					pixelIdx := yOffset + x
-					baseVal := input[pixelIdx]
-
-					// Channel 0: Base normalized grayscale intensity
-					out[pixelIdx] = baseVal
-
-					// Channels 1-4: Immediate diagonal absolute gradients
-					for ch := 0; ch < 4; ch++ {
-						dx := DiagonalOffsets[ch][0]
-						dy := DiagonalOffsets[ch][1]
-						nx := clamp(x+dx, 0, w-1)
-						ny := clamp(y+dy, 0, h-1)
-						neighborVal := input[ny*w+nx]
-						out[(ch+1)*hw+pixelIdx] = abs32(baseVal - neighborVal)
-					}
-
-					// Channels 5-12: 8-Way Chess Knight-Move differential operators
-					for k := 0; k < 8; k++ {
-						dx := KnightOffsets[k][0]
-						dy := KnightOffsets[k][1]
-						nx := clamp(x+dx, 0, w-1)
-						ny := clamp(y+dy, 0, h-1)
-						neighborVal := input[ny*w+nx]
-						out[(k+5)*hw+pixelIdx] = abs32(baseVal - neighborVal)
-					}
-				}
+			// Channels 1-4: Immediate diagonal absolute gradients
+			for ch := 0; ch < 4; ch++ {
+				dx := DiagonalOffsets[ch][0]
+				dy := DiagonalOffsets[ch][1]
+				nx := clamp(x+dx, 0, w-1)
+				ny := clamp(y+dy, 0, h-1)
+				neighborVal := input[ny*w+nx]
+				out[(ch+1)*hw+pixelIdx] = abs32(baseVal - neighborVal)
 			}
-		}(startY, endY)
-	}
 
-	wg.Wait()
+			// Channels 5-12: 8-Way Chess Knight-Move differential operators
+			for k := 0; k < 8; k++ {
+				dx := KnightOffsets[k][0]
+				dy := KnightOffsets[k][1]
+				nx := clamp(x+dx, 0, w-1)
+				ny := clamp(y+dy, 0, h-1)
+				neighborVal := input[ny*w+nx]
+				out[(k+5)*hw+pixelIdx] = abs32(baseVal - neighborVal)
+			}
+		}
+	}
 }
 
 // --- 7.4 TENSOR-LEVEL IN-PLACE & ALLOCATING MANIFOLD TRANSFORMERS ---
@@ -2275,76 +2255,48 @@ func (l *Conv2DLayer) ForwardInto(input *Tensor, output *Tensor) {
 	outHW := outH * outW
 	weightsPerOutChannel := inC * Ksq
 
-	numWorkers := runtime.NumCPU()
-	if numWorkers <= 0 {
-		numWorkers = 1
-	}
-	if numWorkers > outC {
-		numWorkers = outC
-	}
+	for cOut := 0; cOut < outC; cOut++ {
+		biasVal := l.Bias.Data[cOut]
+		outChOffset := cOut * outHW
+		weightOutOffset := cOut * weightsPerOutChannel
 
-	channelsPerWorker := (outC + numWorkers - 1) / numWorkers
-	var wg sync.WaitGroup
+		for y := 0; y < outH; y++ {
+			inYBase := y*S - P
+			outYOffset := outChOffset + y*outW
 
-	for w := 0; w < numWorkers; w++ {
-		startC := w * channelsPerWorker
-		endC := startC + channelsPerWorker
-		if endC > outC {
-			endC = outC
-		}
-		if startC >= endC {
-			continue
-		}
+			for x := 0; x < outW; x++ {
+				inXBase := x*S - P
+				var sum float32 = biasVal
 
-		wg.Add(1)
-		go func(sC, eC int) {
-			defer wg.Done()
-			for cOut := sC; cOut < eC; cOut++ {
-				biasVal := l.Bias.Data[cOut]
-				outChOffset := cOut * outHW
-				weightOutOffset := cOut * weightsPerOutChannel
+				for cIn := 0; cIn < inC; cIn++ {
+					inChOffset := cIn * inHW
+					weightInOffset := weightOutOffset + cIn*Ksq
 
-				for y := 0; y < outH; y++ {
-					inYBase := y*S - P
-					outYOffset := outChOffset + y*outW
-
-					for x := 0; x < outW; x++ {
-						inXBase := x*S - P
-						var sum float32 = biasVal
-
-						for cIn := 0; cIn < inC; cIn++ {
-							inChOffset := cIn * inHW
-							weightInOffset := weightOutOffset + cIn*Ksq
-
-							for ky := 0; ky < K; ky++ {
-								inY := inYBase + ky
-								if inY < 0 || inY >= inH {
-									continue
-								}
-								inRowOffset := inChOffset + inY*inW
-								weightRowOffset := weightInOffset + ky*K
-
-								for kx := 0; kx < K; kx++ {
-									inX := inXBase + kx
-									if inX < 0 || inX >= inW {
-										continue
-									}
-
-									weightVal := l.Weights.Data[weightRowOffset+kx]
-									inputVal := input.Data[inRowOffset+inX]
-									sum += weightVal * inputVal
-								}
-							}
+					for ky := 0; ky < K; ky++ {
+						inY := inYBase + ky
+						if inY < 0 || inY >= inH {
+							continue
 						}
+						inRowOffset := inChOffset + inY*inW
+						weightRowOffset := weightInOffset + ky*K
 
-						output.Data[outYOffset+x] = sum
+						for kx := 0; kx < K; kx++ {
+							inX := inXBase + kx
+							if inX < 0 || inX >= inW {
+								continue
+							}
+
+							weightVal := l.Weights.Data[weightRowOffset+kx]
+							inputVal := input.Data[inRowOffset+inX]
+							sum += weightVal * inputVal
+						}
 					}
 				}
-			}
-		}(startC, endC)
-	}
 
-	wg.Wait()
+				output.Data[outYOffset+x] = sum
+			}
+		}
+	}
 }
 
 // Backward computes analytical Jacobian backpropagation gradients for weights, bias, and input feature tensor:
@@ -2360,7 +2312,7 @@ func (l *Conv2DLayer) Backward(gradOutput *Tensor) *Tensor {
 	return gradInput
 }
 
-// BackwardInto executes multi-threaded analytical backpropagation into pre-allocated gradInput buffer.
+// BackwardInto executes analytical backpropagation into pre-allocated gradInput buffer.
 func (l *Conv2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
 	input := l.LastInput
 	inC, inH, inW := input.Channels, input.Height, input.Width
@@ -2379,147 +2331,49 @@ func (l *Conv2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
 	outHW := outH * outW
 	weightsPerOutChannel := inC * Ksq
 
-	numWorkers := runtime.NumCPU()
-	if numWorkers <= 0 {
-		numWorkers = 1
-	}
+	for cOut := 0; cOut < outC; cOut++ {
+		var biasGrad float32
+		outChOffset := cOut * outHW
+		weightOutOffset := cOut * weightsPerOutChannel
 
-	// 1. Weight & Bias Gradients (Parallelized over output channels cOut for lock-free writing)
-	numWorkersW := numWorkers
-	if numWorkersW > outC {
-		numWorkersW = outC
-	}
-	channelsPerWorkerW := (outC + numWorkersW - 1) / numWorkersW
-	var wgW sync.WaitGroup
+		for y := 0; y < outH; y++ {
+			inYBase := y*S - P
+			outYOffset := outChOffset + y*outW
 
-	for w := 0; w < numWorkersW; w++ {
-		startC := w * channelsPerWorkerW
-		endC := startC + channelsPerWorkerW
-		if endC > outC {
-			endC = outC
-		}
-		if startC >= endC {
-			continue
-		}
+			for x := 0; x < outW; x++ {
+				inXBase := x*S - P
+				gy := gradOutput.Data[outYOffset+x]
+				biasGrad += gy
 
-		wgW.Add(1)
-		go func(sC, eC int) {
-			defer wgW.Done()
-			for cOut := sC; cOut < eC; cOut++ {
-				var biasGrad float32
-				outChOffset := cOut * outHW
-				weightOutOffset := cOut * weightsPerOutChannel
+				for cIn := 0; cIn < inC; cIn++ {
+					inChOffset := cIn * inHW
+					weightInOffset := weightOutOffset + cIn*Ksq
 
-				for y := 0; y < outH; y++ {
-					inYBase := y*S - P
-					outYOffset := outChOffset + y*outW
+					for ky := 0; ky < K; ky++ {
+						inY := inYBase + ky
+						if inY < 0 || inY >= inH {
+							continue
+						}
+						inRowOffset := inChOffset + inY*inW
+						weightRowOffset := weightInOffset + ky*K
 
-					for x := 0; x < outW; x++ {
-						inXBase := x*S - P
-						gy := gradOutput.Data[outYOffset+x]
-						biasGrad += gy
-
-						for cIn := 0; cIn < inC; cIn++ {
-							inChOffset := cIn * inHW
-							weightInOffset := weightOutOffset + cIn*Ksq
-
-							for ky := 0; ky < K; ky++ {
-								inY := inYBase + ky
-								if inY < 0 || inY >= inH {
-									continue
-								}
-								inRowOffset := inChOffset + inY*inW
-								weightRowOffset := weightInOffset + ky*K
-
-								for kx := 0; kx < K; kx++ {
-									inX := inXBase + kx
-									if inX < 0 || inX >= inW {
-										continue
-									}
-
-									xVal := input.Data[inRowOffset+inX]
-									l.Weights.Grad[weightRowOffset+kx] += gy * xVal
-								}
+						for kx := 0; kx < K; kx++ {
+							inX := inXBase + kx
+							if inX < 0 || inX >= inW {
+								continue
 							}
+
+							wIdx := weightRowOffset + kx
+							inIdx := inRowOffset + inX
+							l.Weights.Grad[wIdx] += gy * input.Data[inIdx]
+							gradInput.Data[inIdx] += gy * l.Weights.Data[wIdx]
 						}
 					}
 				}
-				l.Bias.Grad[cOut] += biasGrad
 			}
-		}(startC, endC)
-	}
-	wgW.Wait()
-
-	// 2. Input Gradients (Parallelized over input channels cIn for lock-free writing)
-	numWorkersIn := numWorkers
-	if numWorkersIn > inC {
-		numWorkersIn = inC
-	}
-	channelsPerWorkerIn := (inC + numWorkersIn - 1) / numWorkersIn
-	var wgIn sync.WaitGroup
-
-	for w := 0; w < numWorkersIn; w++ {
-		startCin := w * channelsPerWorkerIn
-		endCin := startCin + channelsPerWorkerIn
-		if endCin > inC {
-			endCin = inC
 		}
-		if startCin >= endCin {
-			continue
-		}
-
-		wgIn.Add(1)
-		go func(sCin, eCin int) {
-			defer wgIn.Done()
-			for cIn := sCin; cIn < eCin; cIn++ {
-				inChOffset := cIn * inHW
-
-				for iy := 0; iy < inH; iy++ {
-					inRowOffset := inChOffset + iy*inW
-
-					for ix := 0; ix < inW; ix++ {
-						var sum float32
-
-						for cOut := 0; cOut < outC; cOut++ {
-							outChOffset := cOut * outHW
-							weightInOffset := cOut*weightsPerOutChannel + cIn*Ksq
-
-							for ky := 0; ky < K; ky++ {
-								yDiff := iy + P - ky
-								if yDiff < 0 || yDiff%S != 0 {
-									continue
-								}
-								y := yDiff / S
-								if y >= outH {
-									continue
-								}
-								outYOffset := outChOffset + y*outW
-								weightRowOffset := weightInOffset + ky*K
-
-								for kx := 0; kx < K; kx++ {
-									xDiff := ix + P - kx
-									if xDiff < 0 || xDiff%S != 0 {
-										continue
-									}
-									x := xDiff / S
-									if x >= outW {
-										continue
-									}
-
-									gy := gradOutput.Data[outYOffset+x]
-									wVal := l.Weights.Data[weightRowOffset+kx]
-									sum += gy * wVal
-								}
-							}
-						}
-
-						gradInput.Data[inRowOffset+ix] = sum
-					}
-				}
-			}
-		}(startCin, endCin)
+		l.Bias.Grad[cOut] += biasGrad
 	}
-	wgIn.Wait()
 }
 
 // --- 8.2 2D MAX POOLING LAYER & SPARSE ARGMAX BACKWARD ROUTING ---
@@ -3357,7 +3211,7 @@ type Sample struct {
 	TargetClass int     // Integer label in [0, K-1]
 }
 
-// DiagonNetModel represents the complete neural network architecture for DiagonNet:
+// DiagonalNetModel represents the complete neural network architecture for DiagonalNet:
 //
 //	13-Channel Manifold [13 x S x S]
 //	  -> Conv2D (13->16, K=3, S=1, P=1) -> ReLU -> MaxPool (2x2)
@@ -3373,7 +3227,7 @@ type Sample struct {
 // linear readout, which is close to a linear model over blurred features and badly underfits.
 // Dropout now sits after the hidden ReLU (regularizing a learned representation) rather than
 // directly on the pooled convolution features, where it was just injecting input noise.
-type DiagonNetModel struct {
+type DiagonalNetModel struct {
 	NumClasses int
 
 	Conv1 *Conv2DLayer
@@ -3394,16 +3248,24 @@ type DiagonNetModel struct {
 	LossFn *CategoricalCrossEntropyLoss
 }
 
-// DiagonNet feature-stack dimensions.
+// DiagonNetModel is an alias for DiagonalNetModel for backward compatibility.
+type DiagonNetModel = DiagonalNetModel
+
+// DiagonalNet feature-stack dimensions.
 const (
-	diagonConv1Channels = 16
-	diagonConv2Channels = 32
-	diagonPoolTarget    = 4
-	diagonHiddenUnits   = 128
+	diagonalConv1Channels = 16
+	diagonalConv2Channels = 32
+	diagonalPoolTarget    = 4
+	diagonalHiddenUnits   = 128
+
+	diagonConv1Channels = diagonalConv1Channels
+	diagonConv2Channels = diagonalConv2Channels
+	diagonPoolTarget    = diagonalPoolTarget
+	diagonHiddenUnits   = diagonalHiddenUnits
 )
 
-// NewDiagonNetModel constructs a DiagonNet classification model configured dynamically for K classes.
-func NewDiagonNetModel(numClasses int, rng *rand.Rand) *DiagonNetModel {
+// NewDiagonalNetModel constructs a DiagonalNet classification model configured dynamically for K classes.
+func NewDiagonalNetModel(numClasses int, rng *rand.Rand) *DiagonalNetModel {
 	if numClasses < 2 {
 		numClasses = 2
 	}
@@ -3417,35 +3279,40 @@ func NewDiagonNetModel(numClasses int, rng *rand.Rand) *DiagonNetModel {
 	fc2RNG := rand.New(rand.NewSource(rng.Int63()))
 	dropRNG := rand.New(rand.NewSource(rng.Int63()))
 
-	flatDim := diagonConv2Channels * diagonPoolTarget * diagonPoolTarget
+	flatDim := diagonalConv2Channels * diagonalPoolTarget * diagonalPoolTarget
 
-	return &DiagonNetModel{
+	return &DiagonalNetModel{
 		NumClasses: numClasses,
 
-		Conv1: NewConv2DLayer(13, diagonConv1Channels, 3, 1, 1, conv1RNG),
+		Conv1: NewConv2DLayer(13, diagonalConv1Channels, 3, 1, 1, conv1RNG),
 		ReLU1: NewReLULayer(),
 		Pool1: NewMaxPool2DLayer(2),
 
-		Conv2: NewConv2DLayer(diagonConv1Channels, diagonConv2Channels, 3, 1, 1, conv2RNG),
+		Conv2: NewConv2DLayer(diagonalConv1Channels, diagonalConv2Channels, 3, 1, 1, conv2RNG),
 		ReLU2: NewReLULayer(),
 		Pool2: NewMaxPool2DLayer(2),
 
-		Pool: NewAdaptiveAvgPool2DLayer(diagonPoolTarget, diagonPoolTarget),
+		Pool: NewAdaptiveAvgPool2DLayer(diagonalPoolTarget, diagonalPoolTarget),
 
-		FC1:     NewLinearLayer(flatDim, diagonHiddenUnits, fc1RNG),
+		FC1:     NewLinearLayer(flatDim, diagonalHiddenUnits, fc1RNG),
 		ReLU3:   NewReLULayer(),
 		Dropout: NewDropoutLayer(0.2, dropRNG),
-		FC:      NewLinearLayer(diagonHiddenUnits, numClasses, fc2RNG),
+		FC:      NewLinearLayer(diagonalHiddenUnits, numClasses, fc2RNG),
 
 		LossFn: NewCategoricalCrossEntropyLoss(),
 	}
+}
+
+// NewDiagonNetModel is an alias for NewDiagonalNetModel for backward compatibility.
+func NewDiagonNetModel(numClasses int, rng *rand.Rand) *DiagonalNetModel {
+	return NewDiagonalNetModel(numClasses, rng)
 }
 
 // Parameters returns all trainable parameter buffers in the model.
 //
 // The order is part of the on-disk checkpoint format: SaveModelWeights and LoadModelWeights walk
 // this slice sequentially, so appending or reordering entries invalidates existing .bin files.
-func (m *DiagonNetModel) Parameters() []*Parameter {
+func (m *DiagonalNetModel) Parameters() []*Parameter {
 	return []*Parameter{
 		m.Conv1.Weights, m.Conv1.Bias,
 		m.Conv2.Weights, m.Conv2.Bias,
@@ -3455,30 +3322,30 @@ func (m *DiagonNetModel) Parameters() []*Parameter {
 }
 
 // ZeroGrad resets analytical Jacobian gradient buffers for all parameters to zero.
-func (m *DiagonNetModel) ZeroGrad() {
+func (m *DiagonalNetModel) ZeroGrad() {
 	for _, p := range m.Parameters() {
 		p.ZeroGrad()
 	}
 }
 
 // SetTraining toggles training vs evaluation mode (affecting Dropout regularization).
-func (m *DiagonNetModel) SetTraining(training bool) {
+func (m *DiagonalNetModel) SetTraining(training bool) {
 	m.Dropout.Training = training
 }
 
 // CloneForWorker constructs an isolated model replica for a parallel batch worker,
 // with independent gradient and layer state buffers.
-func (m *DiagonNetModel) CloneForWorker(workerID int) *DiagonNetModel {
+func (m *DiagonalNetModel) CloneForWorker(workerID int) *DiagonalNetModel {
 	// Each replica gets its own RNG stream so the workers draw independent dropout masks,
 	// while staying reproducible across runs for a given worker id.
 	rng := rand.New(rand.NewSource(int64(1000 + workerID*37)))
-	replica := NewDiagonNetModel(m.NumClasses, rng)
+	replica := NewDiagonalNetModel(m.NumClasses, rng)
 	replica.SyncWeightsFrom(m)
 	return replica
 }
 
 // SyncWeightsFrom copies trainable weight vectors from the master model into the replica.
-func (m *DiagonNetModel) SyncWeightsFrom(master *DiagonNetModel) {
+func (m *DiagonalNetModel) SyncWeightsFrom(master *DiagonalNetModel) {
 	dst := m.Parameters()
 	src := master.Parameters()
 	for i := range dst {
@@ -3487,7 +3354,7 @@ func (m *DiagonNetModel) SyncWeightsFrom(master *DiagonNetModel) {
 }
 
 // SnapshotWeights creates deep copies of all trainable parameter weights in the model.
-func (m *DiagonNetModel) SnapshotWeights() [][]float32 {
+func (m *DiagonalNetModel) SnapshotWeights() [][]float32 {
 	params := m.Parameters()
 	snapshot := make([][]float32, len(params))
 	for i, p := range params {
@@ -3500,7 +3367,7 @@ func (m *DiagonNetModel) SnapshotWeights() [][]float32 {
 }
 
 // RestoreWeights restores trainable parameter weights from a saved snapshot.
-func (m *DiagonNetModel) RestoreWeights(snapshot [][]float32) {
+func (m *DiagonalNetModel) RestoreWeights(snapshot [][]float32) {
 	params := m.Parameters()
 	for i, p := range params {
 		if p != nil && i < len(snapshot) && snapshot[i] != nil {
@@ -3511,7 +3378,7 @@ func (m *DiagonNetModel) RestoreWeights(snapshot [][]float32) {
 
 // forwardFeatures runs the shared convolutional trunk and dense head, returning the class logits.
 // The layers cache their own activations, so ForwardBackward can immediately backpropagate.
-func (m *DiagonNetModel) forwardFeatures(input *Tensor) []float32 {
+func (m *DiagonalNetModel) forwardFeatures(input *Tensor) []float32 {
 	var manifold *Tensor
 	if input.Channels == 1 {
 		manifold = ComputeManifoldTensor(input)
@@ -3536,13 +3403,13 @@ func (m *DiagonNetModel) forwardFeatures(input *Tensor) []float32 {
 }
 
 // Forward executes the full model inference forward pass, returning unnormalized class logits.
-func (m *DiagonNetModel) Forward(input *Tensor) []float32 {
+func (m *DiagonalNetModel) Forward(input *Tensor) []float32 {
 	return m.forwardFeatures(input)
 }
 
 // ForwardBackward executes forward evaluation, cross-entropy loss computation, and full analytical Jacobian
 // backpropagation through all layers, accumulating gradients into parameter buffers.
-func (m *DiagonNetModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
+func (m *DiagonalNetModel) ForwardBackward(input *Tensor, targetClass int) (float32, []float32) {
 	// 1. Forward Pass
 	logits := m.forwardFeatures(input)
 
@@ -3583,14 +3450,14 @@ func (m *DiagonNetModel) ForwardBackward(input *Tensor, targetClass int) (float3
 
 // BatchTrainer coordinates multi-threaded data-parallel batch training across N worker model replicas.
 type BatchTrainer struct {
-	MasterModel *DiagonNetModel
+	MasterModel *DiagonalNetModel
 	Optimizer   *AdamOptimizer
 	NumWorkers  int
-	Workers     []*DiagonNetModel
+	Workers     []*DiagonalNetModel
 }
 
 // NewBatchTrainer constructs a BatchTrainer coordinating N worker model replicas (scaled to runtime.NumCPU()).
-func NewBatchTrainer(master *DiagonNetModel, optimizer *AdamOptimizer, numWorkers int) *BatchTrainer {
+func NewBatchTrainer(master *DiagonalNetModel, optimizer *AdamOptimizer, numWorkers int) *BatchTrainer {
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
 		if numWorkers <= 0 {
@@ -3598,7 +3465,7 @@ func NewBatchTrainer(master *DiagonNetModel, optimizer *AdamOptimizer, numWorker
 		}
 	}
 
-	workers := make([]*DiagonNetModel, numWorkers)
+	workers := make([]*DiagonalNetModel, numWorkers)
 	for i := 0; i < numWorkers; i++ {
 		workers[i] = master.CloneForWorker(i)
 	}
@@ -3731,29 +3598,77 @@ func (bt *BatchTrainer) Evaluate(samples []Sample) (float32, float32) {
 	}
 	bt.MasterModel.SetTraining(false)
 
-	var totalLoss float32
-	var correct int
-
-	for _, sample := range samples {
-		logits := bt.MasterModel.Forward(sample.Input)
-		probs := Softmax(logits)
-		loss := bt.MasterModel.LossFn.Forward(probs, sample.TargetClass)
-		totalLoss += loss
-
-		predClass := 0
-		maxP := probs[0]
-		for k := 1; k < len(probs); k++ {
-			if probs[k] > maxP {
-				maxP = probs[k]
-				predClass = k
-			}
-		}
-		if predClass == sample.TargetClass {
-			correct++
-		}
+	N := bt.NumWorkers
+	if N <= 0 {
+		N = 1
+	}
+	if N > len(samples) {
+		N = len(samples)
 	}
 
-	return totalLoss / float32(len(samples)), float32(correct) / float32(len(samples))
+	chunkSize := (len(samples) + N - 1) / N
+	var wg sync.WaitGroup
+	losses := make([]float32, N)
+	correctCounts := make([]int, N)
+
+	for w := 0; w < N; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > len(samples) {
+			end = len(samples)
+		}
+		if start >= end {
+			continue
+		}
+
+		wg.Add(1)
+		go func(workerIdx, s, e int) {
+			defer wg.Done()
+			var worker *DiagonNetModel
+			if workerIdx < len(bt.Workers) {
+				worker = bt.Workers[workerIdx]
+				worker.SyncWeightsFrom(bt.MasterModel)
+				worker.SetTraining(false)
+			} else {
+				worker = bt.MasterModel
+			}
+
+			var localLoss float32
+			var localCorrect int
+
+			for i := s; i < e; i++ {
+				logits := worker.Forward(samples[i].Input)
+				probs := Softmax(logits)
+				loss := worker.LossFn.Forward(probs, samples[i].TargetClass)
+				localLoss += loss
+
+				predClass := 0
+				maxP := probs[0]
+				for k := 1; k < len(probs); k++ {
+					if probs[k] > maxP {
+						maxP = probs[k]
+						predClass = k
+					}
+				}
+				if predClass == samples[i].TargetClass {
+					localCorrect++
+				}
+			}
+
+			losses[workerIdx] = localLoss
+			correctCounts[workerIdx] = localCorrect
+		}(w, start, end)
+	}
+	wg.Wait()
+
+	var totalLoss float32
+	var totalCorrect int
+	for w := 0; w < N; w++ {
+		totalLoss += losses[w]
+		totalCorrect += correctCounts[w]
+	}
+
+	return totalLoss / float32(len(samples)), float32(totalCorrect) / float32(len(samples))
 }
 
 // ModelCheckpoint preserves parameter weights from the epoch achieving the highest validation accuracy.
@@ -3774,7 +3689,7 @@ func NewModelCheckpoint() *ModelCheckpoint {
 
 // Update records model weights if current validation accuracy strictly exceeds previous best accuracy.
 // Returns true if a new best accuracy was achieved.
-func (cp *ModelCheckpoint) Update(model *DiagonNetModel, epoch int, valAcc float64) bool {
+func (cp *ModelCheckpoint) Update(model *DiagonalNetModel, epoch int, valAcc float64) bool {
 	if valAcc > cp.BestValAcc {
 		cp.BestValAcc = valAcc
 		cp.BestEpoch = epoch
@@ -3785,7 +3700,7 @@ func (cp *ModelCheckpoint) Update(model *DiagonNetModel, epoch int, valAcc float
 }
 
 // RestoreBest restores the optimal historical weights into the model.
-func (cp *ModelCheckpoint) RestoreBest(model *DiagonNetModel) {
+func (cp *ModelCheckpoint) RestoreBest(model *DiagonalNetModel) {
 	if cp.BestWeights != nil && model != nil {
 		model.RestoreWeights(cp.BestWeights)
 	}
@@ -3817,7 +3732,7 @@ type EvaluationReport struct {
 }
 
 // ComputeEvaluationMetrics computes confusion matrix, per-class Precision, Recall, F1, and Macro-F1.
-func ComputeEvaluationMetrics(model *DiagonNetModel, samples []Sample, classNames []string) EvaluationReport {
+func ComputeEvaluationMetrics(model *DiagonalNetModel, samples []Sample, classNames []string) EvaluationReport {
 	K := model.NumClasses
 	if len(classNames) < K {
 		classNames = make([]string, K)
@@ -3939,7 +3854,7 @@ func ComputeEvaluationMetrics(model *DiagonNetModel, samples []Sample, className
 // PrintEvaluationReport outputs a clean tabular evaluation report with per-class and macro metrics.
 func PrintEvaluationReport(report EvaluationReport) {
 	fmt.Println("=======================================================================================")
-	fmt.Println("                       DIAGONNET MODEL EVALUATION REPORT                               ")
+	fmt.Println("                      DIAGONALNET MODEL EVALUATION REPORT                              ")
 	fmt.Println("=======================================================================================")
 	fmt.Printf(" Total Samples Tested : %d\n", report.TotalSamples)
 	fmt.Printf(" Overall Accuracy     : %6.2f%% (%d / %d)\n", report.Accuracy*100.0, int(report.Accuracy*float64(report.TotalSamples)+0.5), report.TotalSamples)
@@ -3983,7 +3898,7 @@ const webAppHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DiagonNet | Real-Time Neural Drawing Canvas & Deep Diagnostics</title>
+<title>DiagonalNet | Real-Time Neural Drawing Canvas & Deep Diagnostics</title>
 <style>
   :root {
     --bg-main: #070b14;
@@ -4099,7 +4014,7 @@ const webAppHTML = `<!DOCTYPE html>
   <header>
     <div class="logo-title">
       <span>⬡</span>
-      <span>DiagonNet 13-Manifold Neural Engine</span>
+      <span>DiagonalNet 13-Manifold Neural Engine</span>
     </div>
     <div class="header-badges">
       <span class="badge" id="hdrCores">⚡ CPU Cores: &mdash;</span>
@@ -4422,7 +4337,7 @@ const webAppHTML = `<!DOCTYPE html>
       <!-- Tab 5: Model Architecture Specs -->
       <div class="tab-pane" id="tab-arch">
         <div class="card">
-          <div style="font-weight: 700; font-size: 0.9rem;">DiagonNet Architecture &amp; Parameter Topology</div>
+          <div style="font-weight: 700; font-size: 0.9rem;">DiagonalNet Architecture &amp; Parameter Topology</div>
           
           <div class="stat-grid-3">
             <div class="stat-box">
@@ -5065,7 +4980,7 @@ const webAppHTML = `<!DOCTYPE html>
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'diagonnet_telemetry.json';
+      a.download = 'diagonalnet_telemetry.json';
       a.click();
     });
   });
@@ -5316,13 +5231,13 @@ func PreprocessWebImage(src image.Image) (*Tensor, bool) {
 
 // InferenceServer hosts the HTTP web canvas UI and real-time prediction API.
 type InferenceServer struct {
-	Model      *DiagonNetModel
+	Model      *DiagonalNetModel
 	ClassNames []string
 	Port       int
 }
 
 // NewInferenceServer constructs a new inference web server.
-func NewInferenceServer(model *DiagonNetModel, classNames []string, port int) *InferenceServer {
+func NewInferenceServer(model *DiagonalNetModel, classNames []string, port int) *InferenceServer {
 	if port <= 0 {
 		port = 8081
 	}
@@ -5707,13 +5622,13 @@ func OpenBrowser(url string) error {
 }
 
 // StartInferenceServer launches the HTTP web server and optionally opens the browser.
-func StartInferenceServer(model *DiagonNetModel, classNames []string, port int, autoOpen bool) error {
+func StartInferenceServer(model *DiagonalNetModel, classNames []string, port int, autoOpen bool) error {
 	srv := NewInferenceServer(model, classNames, port)
 	addr := fmt.Sprintf(":%d", port)
 	url := fmt.Sprintf("http://localhost:%d", port)
 
 	fmt.Println("====================================================================================================")
-	fmt.Println("                       DIAGONNET REAL-TIME INFERENCE & WEB RUNTIME")
+	fmt.Println("                      DIAGONALNET REAL-TIME INFERENCE & WEB RUNTIME")
 	fmt.Println("====================================================================================================")
 	fmt.Printf(" Server URL         : %s\n", url)
 	fmt.Printf(" HTTP Listen Port   : %d\n", port)
@@ -5740,8 +5655,8 @@ func StartInferenceServer(model *DiagonNetModel, classNames []string, port int, 
 func printHelp() {
 	fmt.Print(banner)
 	fmt.Println("Usage:")
-	fmt.Println("  diagonnet [mode flag] [configuration flags]")
-	fmt.Println("  diagonnet [subcommand] [configuration flags]")
+	fmt.Println("  diagonalnet [mode flag] [configuration flags]")
+	fmt.Println("  diagonalnet [subcommand] [configuration flags]")
 	fmt.Println()
 	fmt.Println("Execution Modes:")
 	fmt.Println("  -train          Launch deep learning model training pipeline")
@@ -5753,7 +5668,7 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("Configuration Flags:")
 	fmt.Println("  -data string    Path to dataset samples directory (default \"data\")")
-	fmt.Println("  -model string   Path to binary model weights file (default \"weights/diagonnet_model.bin\")")
+	fmt.Println("  -model string   Path to binary model weights file (default \"weights/diagonalnet_model.bin\")")
 	fmt.Println("  -epochs int     Number of training epochs (default 8)")
 	fmt.Println("  -lr float       Learning rate for parameter optimization (default 0.002)")
 	fmt.Println("  -batch int      Mini-batch size for training (default 64)")
@@ -5761,9 +5676,9 @@ func printHelp() {
 	fmt.Println("  -help, -h       Display this help and exit")
 	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  diagonnet -train -data data -epochs 10 -lr 0.001 -batch 32")
-	fmt.Println("  diagonnet -serve -model weights/diagonnet_model.bin -port 8081")
-	fmt.Println("  diagonnet -audit -data data")
+	fmt.Println("  diagonalnet -train -data data -epochs 10 -lr 0.001 -batch 32")
+	fmt.Println("  diagonalnet -serve -model weights/diagonalnet_model.bin -port 8081")
+	fmt.Println("  diagonalnet -audit -data data")
 	fmt.Println()
 }
 
@@ -5802,7 +5717,7 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	}
 
 	fmt.Println("====================================================================================================")
-	fmt.Println("                         DIAGONNET DEEP LEARNING MODEL TRAINING PIPELINE")
+	fmt.Println("                        DIAGONALNET DEEP LEARNING MODEL TRAINING PIPELINE")
 	fmt.Println("====================================================================================================")
 	fmt.Printf(" Training Profile  : %s\n", profileTitle)
 	fmt.Printf(" Dataset Directory : %s\n", dataDir)
@@ -5832,37 +5747,81 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 		}
 		fmt.Printf(" Preprocessing %d %s samples [%s]... ", len(items), label, augStr)
 		start := time.Now()
-		samples := make([]Sample, 0, len(items)*15)
-		for _, it := range items {
-			gray, err := LoadImageFromFile(it.Path)
-			if err != nil {
+
+		numWorkers := NumWorkers()
+		if numWorkers > len(items) {
+			numWorkers = len(items)
+		}
+		if numWorkers <= 0 {
+			numWorkers = 1
+		}
+
+		type workerResult struct {
+			samples []Sample
+		}
+		results := make([]workerResult, numWorkers)
+		chunkSize := (len(items) + numWorkers - 1) / numWorkers
+		var wg sync.WaitGroup
+
+		for w := 0; w < numWorkers; w++ {
+			s := w * chunkSize
+			e := s + chunkSize
+			if e > len(items) {
+				e = len(items)
+			}
+			if s >= e {
 				continue
 			}
 
-			var variants []*image.Gray
-			if augment {
-				variants = AugmentImage(gray)
-			} else {
-				variants = []*image.Gray{gray}
-			}
+			wg.Add(1)
+			go func(workerIdx, startIdx, endIdx int) {
+				defer wg.Done()
+				localSamples := make([]Sample, 0, (endIdx-startIdx)*15)
+				for i := startIdx; i < endIdx; i++ {
+					it := items[i]
+					gray, err := LoadImageFromFile(it.Path)
+					if err != nil {
+						continue
+					}
 
-			for _, v := range variants {
-				bbox := FindBoundingBox(v, 10)
-				if bbox == nil {
-					// Blank variant: no foreground stroke survived. Feeding an all-zero image
-					// under a real class label is pure label noise, so drop it.
-					continue
+					var variants []*image.Gray
+					if augment {
+						variants = AugmentImage(gray)
+					} else {
+						variants = []*image.Gray{gray}
+					}
+
+					for _, v := range variants {
+						bbox := FindBoundingBox(v, 10)
+						if bbox == nil {
+							// Blank variant: no foreground stroke survived. Feeding an all-zero image
+							// under a real class label is pure label noise, so drop it.
+							continue
+						}
+						centered := PadAndCenter(v, bbox)
+						stretched := ContrastStretch(centered)
+						resized := ResizeBilinear(stretched, InputSize, InputSize)
+						tensor := GrayImageToTensor(resized)
+						localSamples = append(localSamples, Sample{
+							Input:       tensor,
+							TargetClass: it.ClassIndex,
+						})
+					}
 				}
-				centered := PadAndCenter(v, bbox)
-				stretched := ContrastStretch(centered)
-				resized := ResizeBilinear(stretched, InputSize, InputSize)
-				tensor := GrayImageToTensor(resized)
-				samples = append(samples, Sample{
-					Input:       tensor,
-					TargetClass: it.ClassIndex,
-				})
-			}
+				results[workerIdx].samples = localSamples
+			}(w, s, e)
 		}
+		wg.Wait()
+
+		var totalCount int
+		for _, r := range results {
+			totalCount += len(r.samples)
+		}
+		samples := make([]Sample, 0, totalCount)
+		for _, r := range results {
+			samples = append(samples, r.samples...)
+		}
+
 		fmt.Printf("Done (%.2fs | %d clean samples)\n", time.Since(start).Seconds(), len(samples))
 		return samples
 	}
@@ -5878,7 +5837,7 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	// 3. Initialize Model, Optimizer, BatchTrainer, Checkpoint
 	numClasses := ds.Metadata.NumClasses
 	rng := rand.New(rand.NewSource(42))
-	masterModel := NewDiagonNetModel(numClasses, rng)
+	masterModel := NewDiagonalNetModel(numClasses, rng)
 	paramCount := CountModelParameters(masterModel.Parameters())
 
 	optimizer := NewAdamOptimizer(masterModel.Parameters(), AdamOptimizerConfig{
@@ -5895,11 +5854,11 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 	fmt.Println("----------------------------------------------------------------------------------------------------")
 	fmt.Printf(" Input Resolution  : %dx%d (bbox-cropped, centered, contrast-stretched)\n", InputSize, InputSize)
 	fmt.Printf(" Model Architecture: 13-Manifold -> Conv(13->%d,K3,S1) -> ReLU -> MaxPool2 -> Conv(%d->%d,K3,S1) -> ReLU -> MaxPool2\n",
-		diagonConv1Channels, diagonConv1Channels, diagonConv2Channels)
+		diagonalConv1Channels, diagonalConv1Channels, diagonalConv2Channels)
 	fmt.Printf("                     -> AdaptiveAvgPool(%dx%d) -> Linear(%d->%d) -> ReLU -> Dropout(0.2) -> Linear(%d->%d)\n",
-		diagonPoolTarget, diagonPoolTarget,
-		diagonConv2Channels*diagonPoolTarget*diagonPoolTarget, diagonHiddenUnits,
-		diagonHiddenUnits, numClasses)
+		diagonalPoolTarget, diagonalPoolTarget,
+		diagonalConv2Channels*diagonalPoolTarget*diagonalPoolTarget, diagonalHiddenUnits,
+		diagonalHiddenUnits, numClasses)
 	fmt.Printf(" Trainable Parameters: %d float32 weights and biases\n", paramCount)
 	fmt.Println("----------------------------------------------------------------------------------------------------")
 	fmt.Println(" Starting Data-Parallel Training Across CPU Cores...")
@@ -5958,6 +5917,21 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 			batchLoss, batchAcc := trainer.TrainBatch(currBatch)
 			totalEpochLoss += batchLoss
 			totalEpochAcc += batchAcc
+
+			// Real-time batch progress report every 50 batches or at end
+			if (b+1)%50 == 0 || b+1 == numBatches {
+				pct := float64(b+1) / float64(numBatches) * 100.0
+				runningLoss := totalEpochLoss / float32(b+1)
+				runningAcc := (totalEpochAcc / float32(b+1)) * 100.0
+				elapsedSec := time.Since(epStart).Seconds()
+				var speed float64
+				if elapsedSec > 0 {
+					speed = float64((b + 1) * batchSize) / elapsedSec
+				}
+				fmt.Printf("\r [Epoch %2d/%2d] Batch [%4d/%4d] (%5.1f%%) | Loss: %.4f (Acc: %5.1f%%) | Speed: %4.0f img/s",
+					ep, epochs, b+1, numBatches, pct, runningLoss, runningAcc, speed)
+				_ = os.Stdout.Sync()
+			}
 		}
 
 		avgTrainLoss := totalEpochLoss / float32(numBatches)
@@ -5974,7 +5948,7 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 		}
 
 		epDuration := time.Since(epStart).Seconds()
-		fmt.Printf(" Epoch [%2d/%2d] | Train Loss: %.4f (Acc: %5.1f%%) | Val Loss: %.4f (Acc: %5.1f%%) | Time: %5.2fs%s\n",
+		fmt.Printf("\r Epoch [%2d/%2d] | Train Loss: %.4f (Acc: %5.1f%%) | Val Loss: %.4f (Acc: %5.1f%%) | Time: %5.2fs%s\n",
 			ep, epochs, avgTrainLoss, avgTrainAcc, valLoss, valAccPct, epDuration, bestTag)
 	}
 
@@ -6003,17 +5977,17 @@ func runTrain(dataDir string, modelPath string, epochs int, lr float32, batchSiz
 func runServer(modelPath string, port int) {
 	fmt.Println(">>> [Serve Mode] Initializing interactive HTTP inference runtime...")
 
-	var model *DiagonNetModel
+	var model *DiagonalNetModel
 	var classNames []string
 
 	// 1. Try loading weights from disk if file exists
 	if _, err := os.Stat(modelPath); err == nil {
 		fmt.Printf("    Loading model weights from: %s\n", modelPath)
-		tempModel := NewDiagonNetModel(2, nil)
+		tempModel := NewDiagonalNetModel(2, nil)
 		loadedClasses, err := LoadModelWeights(modelPath, tempModel.Parameters())
 		if err == nil && len(loadedClasses) >= 2 {
 			classNames = loadedClasses
-			model = NewDiagonNetModel(len(classNames), nil)
+			model = NewDiagonalNetModel(len(classNames), nil)
 			_, _ = LoadModelWeights(modelPath, model.Parameters())
 			fmt.Printf("    Successfully loaded weights for %d classes: %v\n", len(classNames), classNames)
 		} else {
@@ -6022,7 +5996,7 @@ func runServer(modelPath string, port int) {
 			// model rather than a stale file.
 			fmt.Printf("    [WARNING] Could not load %s: %v\n", modelPath, err)
 			fmt.Println("    [WARNING] The checkpoint does not match the current network layout.")
-			fmt.Println("    [WARNING] Retrain before serving:  diagonnet -train -data data -profile normal")
+			fmt.Println("    [WARNING] Retrain before serving:  diagonalnet -train -data data -profile normal")
 		}
 	}
 
@@ -6031,11 +6005,11 @@ func runServer(modelPath string, port int) {
 		ds, err := ScanDataset("data")
 		if err == nil && ds.Metadata.NumClasses >= 2 {
 			classNames = ds.Metadata.Classes
-			model = NewDiagonNetModel(len(classNames), rand.New(rand.NewSource(42)))
+			model = NewDiagonalNetModel(len(classNames), rand.New(rand.NewSource(42)))
 			fmt.Printf("    [WARNING] Serving UNTRAINED He-initialized weights for discovered classes: %v\n", classNames)
 		} else {
 			classNames = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-			model = NewDiagonNetModel(10, rand.New(rand.NewSource(42)))
+			model = NewDiagonalNetModel(10, rand.New(rand.NewSource(42)))
 			fmt.Println("    [WARNING] Serving UNTRAINED He-initialized weights for standard digits (0-9)")
 		}
 		fmt.Println("    [WARNING] Predictions will be random until the model is trained.")
@@ -6051,7 +6025,7 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	PrintHardwareDiagnostics()
 
-	fs := flag.NewFlagSet("diagonnet", flag.ContinueOnError)
+	fs := flag.NewFlagSet("diagonalnet", flag.ContinueOnError)
 	fs.Usage = printHelp
 
 	trainFlag := fs.Bool("train", false, "Launch deep learning model training pipeline")
@@ -6059,7 +6033,7 @@ func main() {
 	auditFlag := fs.Bool("audit", false, "Run dataset validation, shape verification, and integrity audit")
 
 	dataDir := fs.String("data", "data", "Path to dataset directory")
-	modelPath := fs.String("model", "weights/diagonnet_model.bin", "Path to binary model weights")
+	modelPath := fs.String("model", "weights/diagonalnet_model.bin", "Path to binary model weights")
 	epochs := fs.Int("epochs", 8, "Number of training epochs")
 	lr := fs.Float64("lr", 0.002, "Learning rate for optimization")
 	batchSize := fs.Int("batch", 64, "Mini-batch size for training")

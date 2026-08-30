@@ -221,7 +221,7 @@ func TestReduceGradientsMultiParam(t *testing.T) {
 
 // 4. Model IO Unit Tests
 func TestSaveAndLoadModelWeights(t *testing.T) {
-	tempDir := filepath.Join(os.TempDir(), "diagonnet_singlefile_test")
+	tempDir := filepath.Join(os.TempDir(), "diagonalnet_singlefile_test")
 	defer os.RemoveAll(tempDir)
 
 	modelPath := filepath.Join(tempDir, "weights", "model.bin")
@@ -1304,7 +1304,7 @@ func TestStepLRSchedulerDefaultSchedule(t *testing.T) {
 }
 
 func TestStepLRSchedulerJSONPersistence(t *testing.T) {
-	tempDir := filepath.Join(os.TempDir(), "diagonnet_scheduler_test")
+	tempDir := filepath.Join(os.TempDir(), "diagonalnet_scheduler_test")
 	_ = os.RemoveAll(tempDir)
 	defer os.RemoveAll(tempDir)
 
@@ -1398,7 +1398,7 @@ func TestDatasetMetadataTwoWayMapping(t *testing.T) {
 }
 
 func TestScanDatasetValidFilesystem(t *testing.T) {
-	tempDir := filepath.Join(os.TempDir(), "diagonnet_dataset_test")
+	tempDir := filepath.Join(os.TempDir(), "diagonalnet_dataset_test")
 	_ = os.RemoveAll(tempDir)
 	defer os.RemoveAll(tempDir)
 
@@ -1449,13 +1449,13 @@ func TestScanDatasetValidFilesystem(t *testing.T) {
 
 func TestScanDatasetErrorHandling(t *testing.T) {
 	// 1. Non-existent directory
-	_, err := ScanDataset("C:/non_existent_directory_diagonnet_12345")
+	_, err := ScanDataset("C:/non_existent_directory_diagonalnet_12345")
 	if err == nil {
 		t.Fatalf("expected error for non-existent directory")
 	}
 
 	// 2. Directory with only 1 class (< 2 classes)
-	tempDir := filepath.Join(os.TempDir(), "diagonnet_dataset_err1")
+	tempDir := filepath.Join(os.TempDir(), "diagonalnet_dataset_err1")
 	_ = os.RemoveAll(tempDir)
 	defer os.RemoveAll(tempDir)
 
@@ -1468,7 +1468,7 @@ func TestScanDatasetErrorHandling(t *testing.T) {
 	}
 
 	// 3. Directory with subdirectories containing 0 valid images
-	tempDir2 := filepath.Join(os.TempDir(), "diagonnet_dataset_err2")
+	tempDir2 := filepath.Join(os.TempDir(), "diagonalnet_dataset_err2")
 	_ = os.RemoveAll(tempDir2)
 	defer os.RemoveAll(tempDir2)
 
@@ -1485,7 +1485,7 @@ func TestScanDatasetErrorHandling(t *testing.T) {
 
 // 17. Native Image Loading & Grayscale Conversion Unit Tests (Prompt 31)
 func TestLoadImageFromFileAndTensor(t *testing.T) {
-	tempDir := filepath.Join(os.TempDir(), "diagonnet_img_test")
+	tempDir := filepath.Join(os.TempDir(), "diagonalnet_img_test")
 	_ = os.RemoveAll(tempDir)
 	defer os.RemoveAll(tempDir)
 	_ = os.MkdirAll(tempDir, 0755)
@@ -1593,7 +1593,7 @@ func TestTrainTestSplitStratification(t *testing.T) {
 
 // 19. Automated Dataset Health & Quality Auditor Unit Tests (Prompt 33)
 func TestAuditDatasetQualityAndStats(t *testing.T) {
-	tempDir := filepath.Join(os.TempDir(), "diagonnet_audit_test")
+	tempDir := filepath.Join(os.TempDir(), "diagonalnet_audit_test")
 	_ = os.RemoveAll(tempDir)
 	defer os.RemoveAll(tempDir)
 
@@ -1982,10 +1982,10 @@ func TestShearMorphologyAndAugmentImage(t *testing.T) {
 	}
 }
 
-// 26. DiagonNet Full Model Forward & Analytical Backward Unit Tests (Prompt 41)
-func TestDiagonNetModelForwardBackward(t *testing.T) {
+// 26. DiagonalNet Full Model Forward & Analytical Backward Unit Tests (Prompt 41)
+func TestDiagonalNetModelForwardBackward(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
-	model := NewDiagonNetModel(3, rng)
+	model := NewDiagonalNetModel(3, rng)
 	model.SetTraining(false)
 
 	// Create sample 1-channel 100x100 tensor
@@ -2039,7 +2039,7 @@ func TestDiagonNetModelForwardBackward(t *testing.T) {
 // 27. BatchTrainer Data-Parallel Worker Replicas & Master Reduction Unit Tests (Prompts 41 & 42)
 func TestBatchTrainerDataParallelTraining(t *testing.T) {
 	rng := rand.New(rand.NewSource(123))
-	master := NewDiagonNetModel(2, rng)
+	master := NewDiagonalNetModel(2, rng)
 
 	optConfig := DefaultAdamConfig()
 	optConfig.LearningRate = 0.01
@@ -2100,7 +2100,7 @@ func TestBatchTrainerDataParallelTraining(t *testing.T) {
 // 28. Best-Model Validation Accuracy Checkpointing & Weight Restoration Unit Tests (Prompt 43)
 func TestModelCheckpointBestAccuracyAndRestoration(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
-	model := NewDiagonNetModel(2, rng)
+	model := NewDiagonalNetModel(2, rng)
 	cp := NewModelCheckpoint()
 
 	if cp.BestValAcc != -1.0 || cp.BestEpoch != -1 {
@@ -2141,7 +2141,7 @@ func TestModelCheckpointBestAccuracyAndRestoration(t *testing.T) {
 // 29. Comprehensive Multi-Class Classification Evaluation Metrics Unit Tests (Prompt 44)
 func TestMultiClassEvaluationMetrics(t *testing.T) {
 	rng := rand.New(rand.NewSource(99))
-	model := NewDiagonNetModel(3, rng)
+	model := NewDiagonalNetModel(3, rng)
 
 	classes := []string{"circle", "square", "triangle"}
 	samples := make([]Sample, 12)
@@ -2255,7 +2255,7 @@ func TestPreprocessWebImagePipeline(t *testing.T) {
 func TestInferenceServerHTTPRoutesAndPredict(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 	classes := []string{"circle", "square", "triangle"}
-	model := NewDiagonNetModel(len(classes), rng)
+	model := NewDiagonalNetModel(len(classes), rng)
 	server := NewInferenceServer(model, classes, 8081)
 
 	// 1. Test GET / (HTML Application)
@@ -2387,7 +2387,7 @@ func TestMaxPool2DLayerForwardAndBackward(t *testing.T) {
 func TestInferenceServerDeepStats(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 	classes := []string{"0", "1", "2", "3", "4"}
-	model := NewDiagonNetModel(len(classes), rng)
+	model := NewDiagonalNetModel(len(classes), rng)
 	server := NewInferenceServer(model, classes, 8081)
 
 	// Draw a circle in the center of 400x400 canvas

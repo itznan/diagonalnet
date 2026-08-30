@@ -1,8 +1,8 @@
 # ==============================================================================
-# DiagonNet - Pure Go Zero-Dependency Deep Learning Engine
+# DiagonalNet - Pure Go Zero-Dependency Deep Learning Engine
 # ==============================================================================
 
-BINARY_NAME=diagonnet
+BINARY_NAME=diagonalnet
 BIN_DIR=bin
 TARGET=$(BIN_DIR)/$(BINARY_NAME)
 
@@ -20,10 +20,10 @@ audit: build
 	$(TARGET) -audit -data data
 
 train: build
-	$(TARGET) -train -data data -model weights/diagonnet_model.bin -epochs 10 -lr 0.002 -batch 32
+	$(TARGET) -train -data data -model weights/diagonalnet_model.bin -epochs 10 -lr 0.002 -batch 32
 
 serve: build
-	$(TARGET) -serve -port 8081 -model weights/diagonnet_model.bin
+	$(TARGET) -serve -port 8081 -model weights/diagonalnet_model.bin
 
 deps-check:
 	@echo "Checking module graph..."
@@ -34,3 +34,4 @@ deps-check:
 clean:
 	go clean
 	rm -rf $(BIN_DIR)
+

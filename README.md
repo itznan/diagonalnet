@@ -1,4 +1,4 @@
-# DiagonNet (`diagonalnet`)
+# DiagonalNet (`diagonalnet`)
 
 [![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
@@ -44,7 +44,7 @@ GitHub Repository: [https://github.com/itznan/diagonalnet](https://github.com/it
 
 ## Overview
 
-**DiagonNet** is an autonomous, high-performance deep learning engine implemented from scratch in **100% pure Go standard library** without any external dependencies, C bindings, or third-party packages.
+**DiagonalNet** is an autonomous, high-performance deep learning engine implemented from scratch in **100% pure Go standard library** without any external dependencies, C bindings, or third-party packages.
 
 The engine leverages analytical Jacobian backpropagation, custom 13-channel spatial difference manifold feature extraction (incorporating immediate diagonal and 8-way chess knight-move operators), contiguous L1/L2 cache-friendly tensors, and lock-free multi-core CPU parallelism.
 
@@ -52,13 +52,13 @@ The engine leverages analytical Jacobian backpropagation, custom 13-channel spat
 
 ## Zero-Dependency Philosophy
 
-DiagonNet does not rely on PyTorch, TensorFlow, OpenCV, NumPy, scikit-learn, or external web frameworks. Every layer, matrix operation, statistical routine, image manifold transformation, binary weight serializer, and concurrency primitive is built natively with the Go Standard Library (`math`, `sync`, `runtime`, `encoding/binary`, `encoding/json`, `bufio`, `os`, `flag`).
+DiagonalNet does not rely on PyTorch, TensorFlow, OpenCV, NumPy, scikit-learn, or external web frameworks. Every layer, matrix operation, statistical routine, image manifold transformation, binary weight serializer, and concurrency primitive is built natively with the Go Standard Library (`math`, `sync`, `runtime`, `encoding/binary`, `encoding/json`, `bufio`, `os`, `flag`).
 
 ---
 
 ## Problem & Solution Matrix
 
-| # | Technical Challenge & Block | Engineering Solution in DiagonNet |
+| # | Technical Challenge & Block | Engineering Solution in DiagonalNet |
 | :-: | :--- | :--- |
 | 1 | **Heavyweight Framework Dependency Hell & Deployment Bloat**<br>Standard ML stacks require gigabytes of Python packages (`torch`, `tensorflow`, `cv2`, `numpy`, `sklearn`), dynamic linkers, and C++ shared runtimes, creating fragile deployments, massive memory footprints, and security audit hurdles. | **100% Pure Go Zero-Dependency Core**<br>Every tensor operation, layer, Jacobian backpropagation pass, optimizer, and I/O serializer is written from scratch using only the Go standard library, producing a single, self-contained, high-performance static binary (<3 MB). |
 | 2 | **Hardcoded Classes & Rigid Dataset Topologies**<br>Traditional codebases hardcode label arrays and class counts, failing when applied to novel datasets or varying category numbers. | **Dataset-Agnostic Filesystem Scanner & Dynamic Two-Way Mapping**<br>Automatically discovers classes from filesystem subdirectories (`data/*`), builds deterministic two-way $0 \dots K-1$ bi-directional mappings (`ClassToIdx`, `IdxToClass`), and configures the classification head dynamically to $K$ classes. |
@@ -215,7 +215,7 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
   - Exact gradient scaling during training mode and zero-overhead identity passthrough during evaluation mode.
 
 ### 11. Data-Parallel BatchTrainer & Model Architecture
-- **Full Model Architecture (`DiagonNetModel`)**: Two stride-1 convolutional stages, each followed by ReLU and $2 \times 2$ max pooling, feeding an adaptive-average-pooled dense head with one hidden layer:
+- **Full Model Architecture (`DiagonalNetModel`)**: Two stride-1 convolutional stages, each followed by ReLU and $2 \times 2$ max pooling, feeding an adaptive-average-pooled dense head with one hidden layer:
 
   ```text
   13-Channel Manifold                                      [13 x 28 x 28]
@@ -226,9 +226,9 @@ All layers support pre-allocated memory destinations (`ForwardInto`, `BackwardIn
     -> Linear(128->K) -> Softmax Cross-Entropy
   ```
 
-  Channel counts, pool target and hidden width are named constants (`diagonConv1Channels`, `diagonConv2Channels`, `diagonPoolTarget`, `diagonHiddenUnits`), giving $\approx 73{,}000$ trainable parameters at $K = 10$.
+  Channel counts, pool target and hidden width are named constants (`diagonalConv1Channels`, `diagonalConv2Channels`, `diagonalPoolTarget`, `diagonalHiddenUnits`), giving $\approx 73{,}000$ trainable parameters at $K = 10$.
 - **Why the trunk is deep**: a single convolution feeding a linear readout over sixteen $4 \times 4$ averages is barely more than a linear classifier over coarse spatial means &mdash; a hard underfit at $\approx 4{,}500$ parameters. Dropout placed directly on those raw pooled features also injects input noise rather than regularizing a learned representation, so it now sits after the hidden ReLU.
-- **Replica Construction (`CloneForWorker`)**: builds replicas via `NewDiagonNetModel` + `SyncWeightsFrom` rather than field-by-field assembly, so a shape change cannot leave workers silently drifted from the master. `SyncWeightsFrom` and `Parameters()` are both layout-driven, so checkpointing, snapshotting and gradient reduction follow the architecture automatically.
+- **Replica Construction (`CloneForWorker`)**: builds replicas via `NewDiagonalNetModel` + `SyncWeightsFrom` rather than field-by-field assembly, so a shape change cannot leave workers silently drifted from the master. `SyncWeightsFrom` and `Parameters()` are both layout-driven, so checkpointing, snapshotting and gradient reduction follow the architecture automatically.
 - **Shared Forward Path (`forwardFeatures`)**: `Forward` and `ForwardBackward` run the same trunk-and-head code, so inference and training cannot diverge.
 - **Data-Parallel Multi-Core Engine (`BatchTrainer`)**:
   - Clones Master model into $N = \text{runtime.NumCPU()}$ isolated worker replicas.
@@ -312,7 +312,7 @@ $$\frac{\partial L}{\partial \theta_i} \approx \frac{L(\theta_i + \epsilon) - L(
 | `TestResizeBilinearInterpolation` | Sub-pixel bilinear interpolation resampling with half-pixel centering | `PASS` |
 | `TestRotateImageAndShift` | Continuous coordinate rotation around center and 2D translation | `PASS` |
 | `TestShearMorphologyAndAugmentImage` | Affine horizontal slant shear, $3\times 3$ dilation/erosion, and 15-variant scale/rotate/shear augmentation | `PASS` |
-| `TestDiagonNetModelForwardBackward` | Full model forward pass, Softmax cross-entropy loss, and analytical backpropagation | `PASS` |
+| `TestDiagonalNetModelForwardBackward` | Full model forward pass, Softmax cross-entropy loss, and analytical backpropagation | `PASS` |
 | `TestBatchTrainerDataParallelTraining` | $N$-replica data-parallel batch training, master gradient reduction, and Adam step | `PASS` |
 | `TestModelCheckpointBestAccuracyAndRestoration` | Validation accuracy tracking, epoch weight snapshotting, and optimal weight restoration | `PASS` |
 | `TestMultiClassEvaluationMetrics` | Confusion matrix, Precision, Recall, F1-Score, and Macro-F1 formulas | `PASS` |
@@ -336,12 +336,12 @@ C:\diagonalnet\
 ├── STDLIB.md               # Standard library replacements & zero-dep rationale
 ├── TRAINING_HISTORY.md     # Comprehensive training run comparisons, metrics & history
 ├── deps-proof.txt          # Proof log demonstrating zero third-party dependencies
-├── diagonnet.bat           # Unified control panel & CLI automation runner (all-in-one)
+├── diagonalnet.bat         # Unified control panel & CLI automation runner (all-in-one)
 ├── go.mod                  # Pure Go 1.27.0 module definition (zero dependencies)
 ├── main.go                 # Engine core, tensor math, layers, autograd, CLI (single file)
 ├── main_test.go            # Comprehensive test suite & numerical gradient checks
 ├── assets/                 # Visual assets, dataset manifolds (.gitkeep)
-├── bin/                    # Compiled binary outputs (diagonnet.exe)
+├── bin/                    # Compiled binary outputs (diagonalnet.exe)
 ├── data/                   # Dataset storage directory (.gitkeep)
 └── weights/                # Binary model weights storage (DIAGON01 format)
 ```
@@ -357,7 +357,7 @@ C:\diagonalnet\
 > **Retrain before serving:**
 >
 > ```bash
-> diagonnet train -profile normal -data data -model weights/diagonnet_model.bin
+> diagonalnet train -profile normal -data data -model weights/diagonalnet_model.bin
 > ```
 >
 > `serve` no longer fails silently here: it prints the load error, names the retrain command, and warns again if it starts on untrained weights.
@@ -367,7 +367,7 @@ C:\diagonalnet\
 Compile the native binary using the Go standard toolchain:
 
 ```bash
-go build -o bin/diagonnet.exe .
+go build -o bin/diagonalnet.exe .
 ```
 
 ### Run Test Suite
@@ -380,7 +380,7 @@ go test -v ./...
 
 ### Training Profiles & Templates
 
-DiagonNet includes 4 pre-configured training profile templates:
+DiagonalNet includes 4 pre-configured training profile templates:
 
 | Profile | Command Flag | Epochs | Batch Size | Learning Rate | Augmentation | Estimated Time | Target Accuracy |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -393,28 +393,28 @@ DiagonNet includes 4 pre-configured training profile templates:
 
 ```bash
 # Display help and usage instructions
-diagonnet help
-# or: diagonnet -help
+diagonalnet help
+# or: diagonalnet -help
 
 # Fast Training Profile (Quick validation in ~1 min)
-diagonnet train -profile fast -data data
+diagonalnet train -profile fast -data data
 
 # Normal Recommended Training Profile (~3-4 mins)
-diagonnet train -profile normal -data data -model weights/diagonnet_model.bin
+diagonalnet train -profile normal -data data -model weights/diagonalnet_model.bin
 
 # Hardcore Deep Training Profile (Maximum 98%+ accuracy)
-diagonnet train -profile hardcore -data data -model weights/diagonnet_model.bin
+diagonalnet train -profile hardcore -data data -model weights/diagonalnet_model.bin
 
 # Manual Custom Training Configuration
-diagonnet train -data data -model weights/diagonnet_model.bin -epochs 25 -lr 0.0018 -batch 32
+diagonalnet train -data data -model weights/diagonalnet_model.bin -epochs 25 -lr 0.0018 -batch 32
 
 # Audit dataset structure and verify sample integrity
-diagonnet audit -data data
-# or: diagonnet -audit -data data
+diagonalnet audit -data data
+# or: diagonalnet -audit -data data
 
 # Start interactive HTTP dashboard and inference server
-diagonnet serve -model weights/diagonnet_model.bin -port 8081
-# or: diagonnet -serve -port 8081
+diagonalnet serve -model weights/diagonalnet_model.bin -port 8081
+# or: diagonalnet -serve -port 8081
 ```
 
 ### Verify Zero Dependencies
@@ -422,7 +422,7 @@ diagonnet serve -model weights/diagonnet_model.bin -port 8081
 Run the dependency verification script to confirm zero external third-party dependencies:
 
 ```cmd
-scripts\verify_deps.bat
+diagonalnet.bat deps
 ```
 
 Output:
@@ -432,7 +432,7 @@ Output:
 ====================================================
 
 [1] Checking active Go modules:
-diagonnet
+diagonalnet
 
 [2] Checking external non-standard library dependencies:
 bufio
@@ -458,9 +458,9 @@ Module is 100% pure Go standard library with zero third-party dependencies.
 
 ## Standard Library Replacements
 
-For complete details on how DiagonNet eliminates heavyweight third-party packages, see [STDLIB.md](STDLIB.md):
+For complete details on how DiagonalNet eliminates heavyweight third-party packages, see [STDLIB.md](STDLIB.md):
 
-| # | Package Normally Used | Category | Standard Library Replacement in DiagonNet |
+| # | Package Normally Used | Category | Standard Library Replacement in DiagonalNet |
 | :-: | :--- | :--- | :--- |
 | 1 | `PyTorch` / `TensorFlow` / `LibTorch` | Deep Learning Engine & Autograd | Handcrafted contiguous tensors, analytical backpropagation Jacobian engine |
 | 2 | `pandas` / `polars` | Tabular DataFrames & Profiling | Custom dataset parsing using `encoding/csv`, `strconv`, `math`, `sort` |
@@ -481,4 +481,5 @@ For complete details on how DiagonNet eliminates heavyweight third-party package
 ## License
 
 MIT License. Designed and engineered from scratch in pure Go.
+
 
