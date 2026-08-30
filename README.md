@@ -1,6 +1,7 @@
 # DiagonalNet (`diagonalnet`)
 
-[![Go Version](https://img.shields.io/badge/Go-1.27.0-00ADD8?style=flat&logo=go)](go.mod)
+[![Build & Test CI](https://github.com/itznan/diagonalnet/actions/workflows/build.yml/badge.svg)](https://github.com/itznan/diagonalnet/actions/workflows/build.yml)
+[![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=flat&logo=go)](go.mod)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Stdlib)-brightgreen)](STDLIB.md)
 [![Tests](https://img.shields.io/badge/Tests-54%20Passing-success)](main_test.go)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
