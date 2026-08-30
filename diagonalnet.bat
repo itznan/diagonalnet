@@ -178,59 +178,63 @@ set /p TCHOICE="Select a training mode [1-5]: "
 
 if not exist "weights" mkdir "weights"
 
-if "%TCHOICE%"=="1" (
-    cls
-    echo [Info] Launching FAST Training Profile (4 Epochs, Batch: 64, LR: 0.0025)...
-    echo.
-    go run . -train -profile fast -data data -model weights\diagonalnet_model.bin
-    echo.
-    pause
-    goto DO_TRAIN
-)
-if "%TCHOICE%"=="2" (
-    cls
-    echo [Info] Launching NORMAL Standard Recommended Training (12 Epochs, Batch: 32, LR: 0.0020)...
-    echo.
-    go run . -train -profile normal -data data -model weights\diagonalnet_model.bin
-    echo.
-    pause
-    goto DO_TRAIN
-)
-if "%TCHOICE%"=="3" (
-    cls
-    echo [Info] Launching HARDCORE Maximum Accuracy Deep Training (30 Epochs, Batch: 32, LR: 0.0020, 15x Augmentation)...
-    echo.
-    go run . -train -profile hardcore -data data -model weights\diagonalnet_model.bin
-    echo.
-    pause
-    goto DO_TRAIN
-)
-if "%TCHOICE%"=="4" (
-    cls
-    echo ================================================================================
-    echo                       MANUAL CUSTOM TRAINING CONFIGURATION
-    echo ================================================================================
-    echo.
-    set /p DATA_DIR="Dataset directory path [default: data]: "
-    if "!DATA_DIR!"=="" set DATA_DIR=data
-    set /p EP="Number of Epochs [default: 15]: "
-    if "!EP!"=="" set EP=15
-    set /p BS="Mini-Batch Size [default: 32]: "
-    if "!BS!"=="" set BS=32
-    set /p LR="Learning Rate [default: 0.002]: "
-    if "!LR!"=="" set LR=0.002
-    set /p OUT_MODEL="Output model weights path [default: weights\diagonalnet_model.bin]: "
-    if "!OUT_MODEL!"=="" set OUT_MODEL=weights\diagonalnet_model.bin
-    echo.
-    echo [Info] Starting manual training with !EP! epochs, LR=!LR!, Batch=!BS!...
-    go run . -train -data !DATA_DIR! -model !OUT_MODEL! -epochs !EP! -batch !BS! -lr !LR!
-    echo.
-    pause
-    goto DO_TRAIN
-)
+if "%TCHOICE%"=="1" goto TRAIN_FAST
+if "%TCHOICE%"=="2" goto TRAIN_NORMAL
+if "%TCHOICE%"=="3" goto TRAIN_HARDCORE
+if "%TCHOICE%"=="4" goto TRAIN_MANUAL
 if "%TCHOICE%"=="5" goto MAIN_MENU
 echo [Error] Invalid selection. Choose 1-5.
 timeout /t 2 >nul
+goto DO_TRAIN
+
+:TRAIN_FAST
+cls
+echo [Info] Launching FAST Training Profile (4 Epochs, Batch: 64, LR: 0.0025)...
+echo.
+go run . -train -profile fast -data data -model weights\diagonalnet_model.bin
+echo.
+pause
+goto DO_TRAIN
+
+:TRAIN_NORMAL
+cls
+echo [Info] Launching NORMAL Standard Recommended Training (12 Epochs, Batch: 32, LR: 0.0020)...
+echo.
+go run . -train -profile normal -data data -model weights\diagonalnet_model.bin
+echo.
+pause
+goto DO_TRAIN
+
+:TRAIN_HARDCORE
+cls
+echo [Info] Launching HARDCORE Maximum Accuracy Deep Training (30 Epochs, Batch: 32, LR: 0.0020, 15x Augmentation)...
+echo.
+go run . -train -profile hardcore -data data -model weights\diagonalnet_model.bin
+echo.
+pause
+goto DO_TRAIN
+
+:TRAIN_MANUAL
+cls
+echo ================================================================================
+echo                       MANUAL CUSTOM TRAINING CONFIGURATION
+echo ================================================================================
+echo.
+set /p DATA_DIR="Dataset directory path [default: data]: "
+if "!DATA_DIR!"=="" set DATA_DIR=data
+set /p EP="Number of Epochs [default: 15]: "
+if "!EP!"=="" set EP=15
+set /p BS="Mini-Batch Size [default: 32]: "
+if "!BS!"=="" set BS=32
+set /p LR="Learning Rate [default: 0.002]: "
+if "!LR!"=="" set LR=0.002
+set /p OUT_MODEL="Output model weights path [default: weights\diagonalnet_model.bin]: "
+if "!OUT_MODEL!"=="" set OUT_MODEL=weights\diagonalnet_model.bin
+echo.
+echo [Info] Starting manual training with !EP! epochs, LR=!LR!, Batch=!BS!...
+go run . -train -data !DATA_DIR! -model !OUT_MODEL! -epochs !EP! -batch !BS! -lr !LR!
+echo.
+pause
 goto DO_TRAIN
 
 :CLI_TRAIN
@@ -318,29 +322,31 @@ echo.
 echo ================================================================================
 set /p GCHOICE="Select an option [1-3]: "
 
-if "%GCHOICE%"=="1" (
-    cls
-    echo [Info] Pulling latest changes from origin main...
-    git pull origin main
-    echo.
-    pause
-    goto DO_GIT
-)
-if "%GCHOICE%"=="2" (
-    cls
-    set /p COMMIT_MSG="Enter commit message [default: Update]: "
-    if "!COMMIT_MSG!"=="" set COMMIT_MSG=Update
-    echo.
-    git add -A
-    git commit -m "!COMMIT_MSG!"
-    git push origin main
-    echo.
-    pause
-    goto DO_GIT
-)
+if "%GCHOICE%"=="1" goto GIT_PULL_DO
+if "%GCHOICE%"=="2" goto GIT_PUSH_DO
 if "%GCHOICE%"=="3" goto MAIN_MENU
 echo [Error] Invalid selection. Choose 1-3.
 timeout /t 2 >nul
+goto DO_GIT
+
+:GIT_PULL_DO
+cls
+echo [Info] Pulling latest changes from origin main...
+git pull origin main
+echo.
+pause
+goto DO_GIT
+
+:GIT_PUSH_DO
+cls
+set /p COMMIT_MSG="Enter commit message [default: Update]: "
+if "!COMMIT_MSG!"=="" set COMMIT_MSG=Update
+echo.
+git add -A
+git commit -m "!COMMIT_MSG!"
+git push origin main
+echo.
+pause
 goto DO_GIT
 
 :CLI_PULL

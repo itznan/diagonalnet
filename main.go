@@ -3898,166 +3898,168 @@ const webAppHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DiagonalNet | Real-Time Neural Drawing Canvas & Deep Diagnostics</title>
+<title>DiagonalNet</title>
 <style>
   :root {
-    --bg-main: #070b14;
-    --bg-card: #0f172a;
-    --bg-card-alt: #162036;
-    --border-color: #1e293b;
-    --border-bright: #334155;
-    --accent-blue: #38bdf8;
-    --accent-cyan: #06b6d4;
+    --bg: #09090b;
+    --card: #121215;
+    --card-sub: #18181c;
+    --border: #222226;
+    --border-light: #2e2e34;
+    --text: #fafafa;
+    --text-sub: #a1a1aa;
+    --text-muted: #52525b;
+    --accent: #ffffff;
     --accent-emerald: #10b981;
-    --accent-amber: #f59e0b;
-    --accent-rose: #f43f5e;
-    --accent-indigo: #6366f1;
-    --accent-purple: #a855f7;
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-  body { background: var(--bg-main); color: var(--text-primary); min-height: 100vh; display: flex; flex-direction: column; }
-  header { background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-color); padding: 0.85rem 1.75rem; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
-  .logo-title { display: flex; align-items: center; gap: 0.75rem; font-size: 1.25rem; font-weight: 700; background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .header-badges { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-  .badge { background: #1e293b; border: 1px solid var(--border-color); color: var(--accent-blue); padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.35rem; }
-  .badge.emerald { color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.08); }
-  .badge.purple { color: var(--accent-purple); border-color: rgba(168, 85, 247, 0.3); background: rgba(168, 85, 247, 0.08); }
-  .main-container { flex: 1; max-width: 1440px; width: 100%; margin: 0 auto; padding: 1.5rem; display: grid; grid-template-columns: 430px 1fr; gap: 1.5rem; }
-  @media (max-width: 1100px) { .main-container { grid-template-columns: 1fr; } }
-  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 0.85rem; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }
-  .canvas-wrapper { position: relative; width: 400px; height: 400px; margin: 0 auto; border-radius: 0.75rem; overflow: hidden; border: 2px solid var(--border-bright); box-shadow: inset 0 2px 12px rgba(0,0,0,0.8), 0 0 20px rgba(56, 189, 248, 0.08); }
-  canvas#paintCanvas { width: 400px; height: 400px; background: #000000; cursor: crosshair; touch-action: none; display: block; }
-  .controls { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
-  button { padding: 0.6rem 0.9rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease-in-out; border: none; font-size: 0.85rem; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; }
-  .btn-clear { background: #1e293b; color: #f8fafc; border: 1px solid var(--border-bright); }
-  .btn-clear:hover { background: #334155; }
-  .btn-predict { background: linear-gradient(135deg, #0284c7, #06b6d4); color: white; }
-  .btn-predict:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3); }
-  .btn-action { background: var(--bg-card-alt); color: var(--text-secondary); border: 1px solid var(--border-bright); padding: 0.35rem 0.65rem; font-size: 0.75rem; border-radius: 0.4rem; }
-  .btn-action:hover { color: var(--text-primary); border-color: var(--accent-blue); background: #1e293b; }
-  .btn-preset { background: #1e293b; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 0.3rem 0.55rem; font-size: 0.75rem; border-radius: 0.35rem; font-family: monospace; }
-  .btn-preset:hover { background: #334155; color: var(--accent-blue); border-color: var(--accent-blue); }
-  .presets-row { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
-  .prediction-banner { background: linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(6, 182, 212, 0.04)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 0.75rem; padding: 1rem 1.25rem; display: flex; align-items: center; justify-content: space-between; position: relative; overflow: hidden; }
-  .prediction-banner::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent-blue), var(--accent-emerald), var(--accent-purple)); }
-  .pred-label-group { display: flex; flex-direction: column; gap: 0.15rem; }
-  .pred-sub { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
-  .pred-name { font-size: 2.25rem; font-weight: 800; color: var(--accent-blue); line-height: 1.1; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); }
-  .latency-tag { font-family: monospace; font-size: 0.85rem; color: var(--accent-emerald); background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.3rem 0.6rem; border-radius: 0.4rem; }
-  .metric-pill { font-family: monospace; font-size: 0.75rem; color: var(--text-secondary); background: #1e293b; border: 1px solid var(--border-color); padding: 0.2rem 0.5rem; border-radius: 0.35rem; display: inline-flex; align-items: center; gap: 0.3rem; }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); }
+  body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; -webkit-font-smoothing: antialiased; }
   
-  /* Tabs */
-  .tabs-nav { display: flex; gap: 0.35rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; overflow-x: auto; scrollbar-width: none; }
-  .tab-btn { background: transparent; border: none; color: var(--text-secondary); padding: 0.5rem 0.85rem; font-size: 0.82rem; font-weight: 600; border-radius: 0.4rem; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-  .tab-btn:hover { color: var(--text-primary); background: #1e293b; }
-  .tab-btn.active { color: var(--accent-blue); background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); }
-  .tab-pane { display: none; flex-direction: column; gap: 1rem; animation: fadeIn 0.15s ease-in; }
+  /* Header */
+  header { background: var(--bg); border-bottom: 1px solid var(--border); padding: 0.75rem 1.5rem; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
+  .logo { display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; font-weight: 600; letter-spacing: -0.01em; }
+  .logo-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-emerald); }
+  .header-meta { display: flex; align-items: center; gap: 0.5rem; }
+  .badge { background: var(--card-sub); border: 1px solid var(--border); color: var(--text-sub); padding: 0.2rem 0.55rem; border-radius: 4px; font-size: 0.72rem; font-family: var(--mono); }
+  .badge.emerald { color: var(--accent-emerald); }
+  .badge.purple { color: #c084fc; }
+
+  /* Layout */
+  .container { flex: 1; max-width: 1380px; width: 100%; margin: 0 auto; padding: 1.5rem; display: grid; grid-template-columns: 420px 1fr; gap: 1.5rem; }
+  @media (max-width: 1024px) { .container { grid-template-columns: 1fr; } }
+  
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; display: flex; flex-direction: column; gap: 0.9rem; }
+  .card-title { font-size: 0.82rem; font-weight: 600; color: var(--text-sub); text-transform: uppercase; letter-spacing: 0.05em; display: flex; justify-content: space-between; align-items: center; }
+  
+  /* Canvas */
+  .canvas-box { width: 400px; height: 400px; margin: 0 auto; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: #000; }
+  canvas#paintCanvas { width: 400px; height: 400px; display: block; cursor: crosshair; touch-action: none; }
+  
+  /* Controls */
+  .controls { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  button { font-size: 0.8rem; font-weight: 500; border-radius: 6px; cursor: pointer; transition: all 0.12s; display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; }
+  .btn-clear { background: var(--card-sub); color: var(--text); border: 1px solid var(--border); padding: 0.45rem 0.85rem; }
+  .btn-clear:hover { background: #222228; border-color: var(--border-light); }
+  .btn-predict { background: var(--text); color: #000; border: 1px solid var(--text); padding: 0.45rem 1rem; font-weight: 600; }
+  .btn-predict:hover { opacity: 0.9; }
+  .btn-action { background: var(--card-sub); color: var(--text-sub); border: 1px solid var(--border); padding: 0.25rem 0.6rem; font-size: 0.72rem; }
+  .btn-action:hover { color: var(--text); border-color: var(--border-light); }
+  .btn-preset { background: var(--card-sub); border: 1px solid var(--border); color: var(--text-sub); padding: 0.25rem 0.55rem; font-size: 0.72rem; border-radius: 4px; font-family: var(--mono); }
+  .btn-preset:hover { background: #24242a; color: var(--text); border-color: var(--border-light); }
+  .presets-row { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  
+  /* Hero Prediction */
+  .prediction-banner { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem 1.4rem; display: flex; align-items: center; justify-content: space-between; }
+  .pred-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; }
+  .pred-name { font-size: 2.8rem; font-weight: 700; color: var(--text); line-height: 1.05; letter-spacing: -0.02em; }
+  .pred-meta { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.3rem; }
+  .metric-pill { font-family: var(--mono); font-size: 0.72rem; color: var(--text-sub); background: var(--card-sub); border: 1px solid var(--border); padding: 0.15rem 0.45rem; border-radius: 4px; }
+  .latency-tag { font-family: var(--mono); font-size: 0.75rem; color: var(--text-sub); }
+
+  /* Navigation Tabs */
+  .tabs-nav { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+  .tab-btn { background: transparent; border: none; color: var(--text-muted); padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 500; border-radius: 4px; cursor: pointer; transition: all 0.12s; }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--text); background: var(--card-sub); font-weight: 600; }
+  .tab-pane { display: none; flex-direction: column; gap: 0.9rem; }
   .tab-pane.active { display: flex; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 
-  /* Probability Bars */
-  .class-list { display: flex; flex-direction: column; gap: 0.45rem; max-height: 280px; overflow-y: auto; padding-right: 0.35rem; }
-  .class-row { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.82rem; }
+  /* Probabilities */
+  .class-list { display: flex; flex-direction: column; gap: 0.4rem; max-height: 260px; overflow-y: auto; }
+  .class-row { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; }
   .class-info { display: flex; justify-content: space-between; font-weight: 500; }
-  .progress-bg { height: 7px; background: #1e293b; border-radius: 9999px; overflow: hidden; border: 1px solid #334155; }
-  .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 9999px; transition: width 0.12s ease-out; }
-  .class-row.top .progress-fill { background: linear-gradient(90deg, var(--accent-emerald), #34d399); }
-  
-  /* Stats Grids */
-  .stat-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
-  .stat-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
-  .stat-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
-  @media (max-width: 700px) { .stat-grid-4, .stat-grid-3 { grid-template-columns: repeat(2, 1fr); } }
-  .stat-box { background: var(--bg-card-alt); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 0.65rem 0.8rem; display: flex; flex-direction: column; gap: 0.2rem; }
-  .stat-box-title { font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; letter-spacing: 0.05em; }
-  .stat-box-val { font-size: 1.15rem; font-weight: 700; color: var(--text-primary); font-family: monospace; }
-  .stat-box-val.accent { color: var(--accent-blue); }
-  .stat-box-val.emerald { color: var(--accent-emerald); }
-  .stat-box-val.amber { color: var(--accent-amber); }
-  .stat-box-val.purple { color: var(--accent-purple); }
-  .stat-box-sub { font-size: 0.7rem; color: var(--text-secondary); }
+  .progress-bg { height: 4px; background: #1c1c20; border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0%; background: #52525b; border-radius: 2px; transition: width 0.12s ease-out; }
+  .class-row.top .progress-fill { background: var(--text); }
 
-  /* 13-Manifold Heatmaps */
-  .manifold-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); gap: 0.6rem; max-height: 440px; overflow-y: auto; padding-right: 0.35rem; }
-  .manifold-card { background: var(--bg-card-alt); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 0.5rem; display: flex; flex-direction: column; align-items: center; gap: 0.35rem; cursor: pointer; transition: transform 0.15s, border-color 0.15s; }
-  .manifold-card:hover { transform: translateY(-2px); border-color: var(--accent-blue); }
-  .manifold-card canvas { width: 84px; height: 84px; image-rendering: pixelated; border-radius: 0.35rem; background: #000; border: 1px solid var(--border-bright); }
-  .manifold-title { font-size: 0.68rem; font-weight: 600; color: var(--text-secondary); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
-  .manifold-sub { font-size: 0.65rem; color: var(--text-muted); font-family: monospace; }
+  /* Minimal Stats Grids */
+  .stat-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+  .stat-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+  .stat-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
+  .stat-box { background: var(--card-sub); border: 1px solid var(--border); border-radius: 6px; padding: 0.55rem 0.7rem; display: flex; flex-direction: column; gap: 0.15rem; }
+  .stat-box-title { font-size: 0.65rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.04em; }
+  .stat-box-val { font-size: 1.05rem; font-weight: 600; color: var(--text); font-family: var(--mono); }
+  .stat-box-sub { font-size: 0.68rem; color: var(--text-muted); }
 
-  /* Timing Chart */
-  .stage-bar-wrapper { display: flex; height: 16px; border-radius: 9999px; overflow: hidden; background: #1e293b; border: 1px solid var(--border-bright); margin: 0.4rem 0; }
+  /* Minimal Tables */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; text-align: left; }
+  .data-table th { color: var(--text-muted); font-weight: 500; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.04em; }
+  .data-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #1a1a1e; color: var(--text-sub); font-family: var(--mono); }
+  .data-table tr:hover td { color: var(--text); background: #16161a; }
+
+  /* Manifold Grid */
+  .manifold-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 0.5rem; max-height: 400px; overflow-y: auto; }
+  .manifold-card { background: var(--card-sub); border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem; display: flex; flex-direction: column; align-items: center; gap: 0.3rem; cursor: pointer; transition: border-color 0.12s; }
+  .manifold-card:hover { border-color: var(--border-light); }
+  .manifold-card canvas { width: 78px; height: 78px; image-rendering: pixelated; border-radius: 4px; background: #000; border: 1px solid var(--border); }
+  .manifold-title { font-size: 0.65rem; font-weight: 500; color: var(--text-sub); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+  .manifold-sub { font-size: 0.62rem; color: var(--text-muted); font-family: var(--mono); }
+
+  /* Timing Bars & Vectors */
+  .stage-bar-wrapper { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #1a1a1e; margin: 0.3rem 0; }
   .stage-segment { height: 100%; transition: width 0.15s; }
-  .stage-legend { display: flex; flex-wrap: wrap; gap: 0.6rem; font-size: 0.72rem; }
-  .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-
-  /* Dense Vector Visualizer */
-  .vector-chart { display: flex; align-items: flex-end; gap: 2px; height: 64px; background: var(--bg-card-alt); padding: 6px 8px; border-radius: 0.5rem; border: 1px solid var(--border-color); overflow-x: auto; }
-  .vector-bar { flex: 1; min-width: 2px; background: var(--accent-blue); border-radius: 1px; transition: height 0.1s; }
-  
-  /* Tables */
-  .data-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; text-align: left; }
-  .data-table th { color: var(--text-muted); font-weight: 600; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border-color); text-transform: uppercase; font-size: 0.68rem; }
-  .data-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid rgba(30, 41, 59, 0.6); color: var(--text-secondary); font-family: monospace; }
-  .data-table tr:hover td { background: rgba(56, 189, 248, 0.04); color: var(--text-primary); }
+  .stage-legend { display: flex; flex-wrap: wrap; gap: 0.6rem; font-size: 0.7rem; color: var(--text-muted); }
+  .legend-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .vector-chart { display: flex; align-items: flex-end; gap: 1px; height: 48px; background: var(--card-sub); padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); }
+  .vector-bar { flex: 1; min-width: 1px; background: var(--text); border-radius: 1px; }
 
   /* Modal */
-  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(4px); z-index: 100; display: none; align-items: center; justify-content: center; padding: 1rem; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(2px); z-index: 100; display: none; align-items: center; justify-content: center; padding: 1rem; }
   .modal-overlay.active { display: flex; }
-  .modal-box { background: var(--bg-card); border: 1px solid var(--border-bright); border-radius: 0.85rem; max-width: 520px; width: 100%; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 20px 40px rgba(0,0,0,0.8); }
+  .modal-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; max-width: 460px; width: 100%; padding: 1.2rem; display: flex; flex-direction: column; gap: 0.8rem; }
+  input[type="range"] { accent-color: var(--text); }
+  input[type="checkbox"] { accent-color: var(--text); }
 </style>
 </head>
 <body>
   <header>
-    <div class="logo-title">
-      <span>⬡</span>
-      <span>DiagonalNet 13-Manifold Neural Engine</span>
+    <div class="logo">
+      <div class="logo-dot"></div>
+      <span>DiagonalNet</span>
     </div>
-    <div class="header-badges">
-      <span class="badge" id="hdrCores">⚡ CPU Cores: &mdash;</span>
-      <span class="badge emerald" id="hdrFps">FPS: &mdash;</span>
-      <span class="badge purple" id="hdrMem">RAM: &mdash;</span>
-      <button class="btn-action" id="btnExportJson">📥 Export Telemetry</button>
+    <div class="header-meta">
+      <span class="badge" id="hdrCores">CPU &mdash;</span>
+      <span class="badge emerald" id="hdrFps">FPS &mdash;</span>
+      <span class="badge purple" id="hdrMem">RAM &mdash;</span>
+      <button class="btn-action" id="btnExportJson">Export</button>
     </div>
   </header>
 
-  <div class="main-container">
-    <!-- Left Column: Canvas, Presets, Morphology -->
-    <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+  <div class="container">
+    <!-- Left Column: Canvas, Controls, Morphology -->
+    <div style="display: flex; flex-direction: column; gap: 1rem;">
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-weight: 700; font-size: 0.95rem;">Interactive Sketch Canvas</span>
-          <span style="font-size: 0.78rem; color: var(--text-secondary);" id="canvasDimLabel">400 &times; 400 px</span>
+        <div class="card-title">
+          <span>Canvas</span>
+          <span style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--mono);" id="canvasDimLabel">400 &times; 400</span>
         </div>
-        <div class="canvas-wrapper">
+        <div class="canvas-box">
           <canvas id="paintCanvas" width="400" height="400"></canvas>
         </div>
         <div class="controls">
-          <button class="btn-clear" id="btnClear">Clear (C)</button>
-          <div style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--text-secondary);">
-            <span>Brush:</span>
-            <input id="brushSize" type="range" min="10" max="40" value="22" style="accent-color: var(--accent-blue); cursor: pointer; width: 70px;">
-            <span id="brushVal" style="font-family: monospace; min-width: 20px;">22</span>
+          <button class="btn-clear" id="btnClear">Clear</button>
+          <div style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-muted);">
+            <span>Brush</span>
+            <input id="brushSize" type="range" min="10" max="40" value="22" style="width: 60px; cursor: pointer;">
+            <span id="brushVal" style="font-family: var(--mono); min-width: 16px;">22</span>
           </div>
-          <button class="btn-predict" id="btnPredict">Predict (↵)</button>
+          <button class="btn-predict" id="btnPredict">Predict</button>
         </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: var(--text-secondary); padding-top: 0.25rem;">
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="chkAutoPredict" checked style="accent-color: var(--accent-emerald);">
-            <span>Live Continuous Autograd</span>
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: var(--text-muted);">
+          <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="chkAutoPredict" checked>
+            <span>Live continuous autograd</span>
           </label>
-          <span style="font-size: 0.72rem; color: var(--text-muted);">Shortcuts: <b>C</b> / <b>Esc</b></span>
+          <span>Shortcuts: <b>C</b> / <b>Esc</b></span>
         </div>
       </div>
 
       <!-- Quick Draw Presets -->
-      <div class="card" style="padding: 1rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.82rem; font-weight: 600;">
-          <span>⚡ Quick Sample Presets</span>
-          <span style="font-size: 0.72rem; color: var(--text-muted);">Click to inject test pattern</span>
+      <div class="card" style="padding: 0.9rem;">
+        <div class="card-title" style="margin-bottom: 0.3rem;">
+          <span>Presets</span>
         </div>
         <div class="presets-row" id="presetsRow">
           <button class="btn-preset" data-preset="0">0</button>
@@ -4077,126 +4079,127 @@ const webAppHTML = `<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Input Spatial Geometry Card -->
-      <div class="card" style="padding: 1rem;">
-        <div style="font-weight: 600; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center;">
-          <span>📐 Input Spatial Morphology</span>
-          <span class="badge" style="font-size: 0.7rem;">28&times;28 Resampled</span>
+      <!-- Input Spatial Morphology -->
+      <div class="card" style="padding: 0.9rem;">
+        <div class="card-title">
+          <span>Morphology</span>
+          <span style="font-size: 0.68rem; color: var(--text-muted); font-family: var(--mono);">28&times;28</span>
         </div>
-        <div style="display: flex; gap: 1rem; align-items: center;">
-          <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem;">
-            <canvas id="preview28Canvas" width="28" height="28" style="width: 84px; height: 84px; image-rendering: pixelated; border-radius: 0.4rem; background: #000; border: 1px solid var(--border-bright);"></canvas>
-            <span style="font-size: 0.65rem; color: var(--text-muted);">Centered Tensor</span>
-          </div>
-          <div style="flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 0.45rem; font-size: 0.75rem;">
-            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
-              <span class="stat-box-title">BBox Size</span>
-              <span class="stat-box-val" id="geomBBoxDim" style="font-size: 0.9rem;">&mdash;</span>
+        <div style="display: flex; gap: 0.8rem; align-items: center;">
+          <canvas id="preview28Canvas" width="28" height="28" style="width: 68px; height: 68px; image-rendering: pixelated; border-radius: 4px; background: #000; border: 1px solid var(--border);"></canvas>
+          <div style="flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem;">
+            <div class="stat-box" style="padding: 0.35rem 0.45rem;">
+              <span class="stat-box-title">BBox</span>
+              <span class="stat-box-val" id="geomBBoxDim" style="font-size: 0.82rem;">&mdash;</span>
             </div>
-            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
-              <span class="stat-box-title">Aspect Ratio</span>
-              <span class="stat-box-val" id="geomAspect" style="font-size: 0.9rem;">&mdash;</span>
+            <div class="stat-box" style="padding: 0.35rem 0.45rem;">
+              <span class="stat-box-title">Aspect</span>
+              <span class="stat-box-val" id="geomAspect" style="font-size: 0.82rem;">&mdash;</span>
             </div>
-            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
-              <span class="stat-box-title">Stroke Mass</span>
-              <span class="stat-box-val" id="geomFgCount" style="font-size: 0.9rem;">&mdash;</span>
+            <div class="stat-box" style="padding: 0.35rem 0.45rem;">
+              <span class="stat-box-title">Mass</span>
+              <span class="stat-box-val" id="geomFgCount" style="font-size: 0.82rem;">&mdash;</span>
             </div>
-            <div class="stat-box" style="padding: 0.4rem 0.5rem;">
-              <span class="stat-box-title">Fill Density</span>
-              <span class="stat-box-val" id="geomDensity" style="font-size: 0.9rem;">&mdash;</span>
+            <div class="stat-box" style="padding: 0.35rem 0.45rem;">
+              <span class="stat-box-title">Density</span>
+              <span class="stat-box-val" id="geomDensity" style="font-size: 0.82rem;">&mdash;</span>
             </div>
           </div>
         </div>
-        <div style="font-size: 0.72rem; color: var(--text-muted); display: flex; justify-content: space-between; font-family: monospace;">
-          <span>Centroid: <span id="geomCentroid" style="color: var(--text-secondary);">&mdash;</span></span>
-          <span>Coverage: <span id="geomCoverage" style="color: var(--text-secondary);">&mdash;</span></span>
+        <div style="font-size: 0.68rem; color: var(--text-muted); display: flex; justify-content: space-between; font-family: var(--mono);">
+          <span>Centroid: <span id="geomCentroid" style="color: var(--text-sub);">&mdash;</span></span>
+          <span>Coverage: <span id="geomCoverage" style="color: var(--text-sub);">&mdash;</span></span>
         </div>
       </div>
     </div>
 
-    <!-- Right Column: Deep Diagnostics & Tabs -->
-    <div style="display: flex; flex-direction: column; gap: 1.25rem;">
-      <!-- Hero Prediction Banner -->
+    <!-- Right Column: Predictions & Diagnostics Tabs -->
+    <div style="display: flex; flex-direction: column; gap: 1rem;">
+      <!-- Hero Prediction -->
       <div class="prediction-banner">
-        <div class="pred-label-group">
-          <span class="pred-sub">Top Predicted Class &bull; 13-Manifold CNN</span>
-          <span class="pred-name" id="topClass">&mdash;</span>
-          <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
+        <div>
+          <div class="pred-label">Predicted Class</div>
+          <div class="pred-name" id="topClass">&mdash;</div>
+          <div class="pred-meta">
             <span class="metric-pill" id="marginBadge">Margin: &mdash;</span>
             <span class="metric-pill" id="entropyBadge">Entropy: &mdash;</span>
           </div>
         </div>
-        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem;">
-          <span id="topConfidence" style="font-size: 2rem; font-weight: 800; color: var(--text-primary);">0.0%</span>
+        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.2rem;">
+          <div id="topConfidence" style="font-size: 2.2rem; font-weight: 700; color: var(--text); font-family: var(--mono);">0.0%</div>
           <span class="latency-tag" id="latencyBadge">&mdash; ms</span>
-          <span style="font-size: 0.72rem; color: var(--text-muted); font-family: monospace;" id="fpsBadge">&mdash; inf/sec</span>
+          <span style="font-size: 0.68rem; color: var(--text-muted); font-family: var(--mono);" id="fpsBadge">&mdash; inf/sec</span>
         </div>
       </div>
 
       <!-- Navigation Tabs -->
       <div class="tabs-nav">
-        <button class="tab-btn active" data-tab="tab-probs">📊 Class Probabilities</button>
-        <button class="tab-btn" data-tab="tab-perf">⚡ Performance &amp; Profiler</button>
-        <button class="tab-btn" data-tab="tab-manifold">🧬 13-Channel Manifold</button>
-        <button class="tab-btn" data-tab="tab-layers">🧠 Layer Activations</button>
-        <button class="tab-btn" data-tab="tab-arch">⚙️ Model Architecture</button>
+        <button class="tab-btn active" data-tab="tab-probs">Probabilities</button>
+        <button class="tab-btn" data-tab="tab-perf">Profiler</button>
+        <button class="tab-btn" data-tab="tab-manifold">13-Manifold</button>
+        <button class="tab-btn" data-tab="tab-layers">Layers</button>
+        <button class="tab-btn" data-tab="tab-arch">Architecture</button>
       </div>
 
-      <!-- Tab 1: Probabilities & Decision Theory -->
+      <!-- Tab 1: Probabilities -->
       <div class="tab-pane active" id="tab-probs">
         <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-weight: 700; font-size: 0.9rem;">Softmax Probability Distribution</span>
-            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--text-secondary);">
-              <span>Temperature T:</span>
-              <input type="range" id="tempSlider" min="0.2" max="2.5" step="0.1" value="1.0" style="width: 75px; accent-color: var(--accent-cyan); cursor: pointer;">
-              <span id="tempVal" style="font-family: monospace;">1.0</span>
+          <div class="card-title">
+            <span>Softmax Distribution</span>
+            <div style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; color: var(--text-muted);">
+              <span>Temp:</span>
+              <input type="range" id="tempSlider" min="0.2" max="2.5" step="0.1" value="1.0" style="width: 60px; cursor: pointer;">
+              <span id="tempVal" style="font-family: var(--mono);">1.0</span>
             </div>
           </div>
 
           <div class="class-list" id="classList">
-            <div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Draw on the canvas to evaluate live class probabilities.</div>
+            <div style="color: var(--text-muted); font-size: 0.78rem; text-align: center; padding: 1.5rem 0;">Draw on the canvas to evaluate live predictions.</div>
           </div>
 
           <!-- Information Theory Metrics -->
-          <div style="font-weight: 700; font-size: 0.85rem; margin-top: 0.5rem;">Information-Theoretic Decision Metrics</div>
+          <div class="card-title" style="margin-top: 0.3rem;">
+            <span>Decision Metrics</span>
+          </div>
           <div class="stat-grid-4">
             <div class="stat-box">
-              <span class="stat-box-title">Shannon Entropy</span>
-              <span class="stat-box-val accent" id="infoEntropy">&mdash;</span>
-              <span class="stat-box-sub" id="infoEntropyMax">Max: &mdash; bits</span>
+              <span class="stat-box-title">Entropy</span>
+              <span class="stat-box-val" id="infoEntropy">&mdash;</span>
+              <span class="stat-box-sub" id="infoEntropyMax">Max: &mdash;</span>
             </div>
             <div class="stat-box">
               <span class="stat-box-title">Uncertainty</span>
-              <span class="stat-box-val amber" id="infoUncertainty">&mdash;</span>
-              <span class="stat-box-sub">Normalized Index</span>
+              <span class="stat-box-val" id="infoUncertainty">&mdash;</span>
+              <span class="stat-box-sub">Normalized</span>
             </div>
             <div class="stat-box">
               <span class="stat-box-title">Perplexity</span>
-              <span class="stat-box-val emerald" id="infoPerplexity">&mdash;</span>
-              <span class="stat-box-sub">2^H Candidates</span>
+              <span class="stat-box-val" id="infoPerplexity">&mdash;</span>
+              <span class="stat-box-sub">2^H</span>
             </div>
             <div class="stat-box">
-              <span class="stat-box-title">Gini Impurity</span>
-              <span class="stat-box-val purple" id="infoGini">&mdash;</span>
-              <span class="stat-box-sub">1 - ∑ p_i^2</span>
+              <span class="stat-box-title">Gini</span>
+              <span class="stat-box-val" id="infoGini">&mdash;</span>
+              <span class="stat-box-sub">Impurity</span>
             </div>
           </div>
 
-          <!-- Raw Logits vs Softmax Table -->
-          <div style="font-weight: 700; font-size: 0.85rem; margin-top: 0.5rem;">Top Class Logits &amp; Softmax Scores</div>
-          <div style="max-height: 160px; overflow-y: auto;">
+          <!-- Logits Table -->
+          <div class="card-title" style="margin-top: 0.3rem;">
+            <span>Logits &amp; Softmax</span>
+          </div>
+          <div style="max-height: 140px; overflow-y: auto;">
             <table class="data-table" id="logitsTable">
               <thead>
                 <tr>
                   <th>Class</th>
-                  <th>Raw Logit (z_i)</th>
-                  <th>Exp(z_i / T)</th>
-                  <th>Softmax P(y=i)</th>
+                  <th>Logit (z)</th>
+                  <th>Exp(z/T)</th>
+                  <th>Softmax P</th>
                 </tr>
               </thead>
               <tbody id="logitsTableBody">
-                <tr><td colspan="4" style="text-align:center;">No data available</td></tr>
+                <tr><td colspan="4" style="text-align:center; color: var(--text-muted);">No data</td></tr>
               </tbody>
             </table>
           </div>
@@ -4206,65 +4209,68 @@ const webAppHTML = `<!DOCTYPE html>
       <!-- Tab 2: Performance Profiler -->
       <div class="tab-pane" id="tab-perf">
         <div class="card">
-          <div style="font-weight: 700; font-size: 0.9rem;">Sub-Millisecond Inference Pipeline Breakdown</div>
+          <div class="card-title">
+            <span>Pipeline Latency</span>
+          </div>
           
-          <!-- Stacked Timing Bar -->
           <div class="stage-bar-wrapper" id="stageTimingBar">
-            <div class="stage-segment" style="width: 20%; background: var(--accent-blue);" title="Preprocess"></div>
-            <div class="stage-segment" style="width: 25%; background: var(--accent-purple);" title="Manifold"></div>
-            <div class="stage-segment" style="width: 35%; background: var(--accent-cyan);" title="Conv1 & 2"></div>
-            <div class="stage-segment" style="width: 15%; background: var(--accent-emerald);" title="Dense"></div>
-            <div class="stage-segment" style="width: 5%; background: var(--accent-amber);" title="Softmax"></div>
+            <div class="stage-segment" style="width: 20%; background: #71717a;" title="Preprocess"></div>
+            <div class="stage-segment" style="width: 25%; background: #a1a1aa;" title="Manifold"></div>
+            <div class="stage-segment" style="width: 35%; background: #ffffff;" title="Conv"></div>
+            <div class="stage-segment" style="width: 15%; background: #52525b;" title="Dense"></div>
+            <div class="stage-segment" style="width: 5%; background: #27272a;" title="Softmax"></div>
           </div>
 
           <div class="stage-legend">
-            <span><span class="legend-dot" style="background: var(--accent-blue);"></span> Preprocess</span>
-            <span><span class="legend-dot" style="background: var(--accent-purple);"></span> 13-Manifold</span>
-            <span><span class="legend-dot" style="background: var(--accent-cyan);"></span> Conv Stages</span>
-            <span><span class="legend-dot" style="background: var(--accent-emerald);"></span> Dense Head</span>
-            <span><span class="legend-dot" style="background: var(--accent-amber);"></span> Softmax</span>
+            <span><span class="legend-dot" style="background: #71717a;"></span> Preprocess</span>
+            <span><span class="legend-dot" style="background: #a1a1aa;"></span> Manifold</span>
+            <span><span class="legend-dot" style="background: #ffffff;"></span> Conv</span>
+            <span><span class="legend-dot" style="background: #52525b;"></span> Dense</span>
+            <span><span class="legend-dot" style="background: #27272a;"></span> Softmax</span>
           </div>
 
-          <table class="data-table" style="margin-top: 0.5rem;">
+          <table class="data-table" style="margin-top: 0.4rem;">
             <thead>
               <tr>
-                <th>Pipeline Stage</th>
+                <th>Stage</th>
                 <th>Latency (µs)</th>
                 <th>Latency (ms)</th>
-                <th>Share (%)</th>
+                <th>Share</th>
               </tr>
             </thead>
             <tbody id="timingTableBody">
-              <tr><td>Preprocessing &amp; BBox</td><td id="tPreUs">&mdash;</td><td id="tPreMs">&mdash;</td><td id="tPrePct">&mdash;</td></tr>
-              <tr><td>13-Manifold Spatial Calculus</td><td id="tManUs">&mdash;</td><td id="tManMs">&mdash;</td><td id="tManPct">&mdash;</td></tr>
-              <tr><td>Conv1 &amp; Conv2 Convolutions</td><td id="tConvUs">&mdash;</td><td id="tConvMs">&mdash;</td><td id="tConvPct">&mdash;</td></tr>
-              <tr><td>Adaptive Pool &amp; Dense FC1/FC2</td><td id="tDenseUs">&mdash;</td><td id="tDenseMs">&mdash;</td><td id="tDensePct">&mdash;</td></tr>
-              <tr><td>Softmax &amp; Decision Logic</td><td id="tSoftUs">&mdash;</td><td id="tSoftMs">&mdash;</td><td id="tSoftPct">&mdash;</td></tr>
-              <tr style="font-weight: 700; color: var(--text-primary);"><td>Total End-to-End Latency</td><td id="tTotUs">&mdash;</td><td id="tTotMs">&mdash;</td><td>100.0%</td></tr>
+              <tr><td>Preprocessing</td><td id="tPreUs">&mdash;</td><td id="tPreMs">&mdash;</td><td id="tPrePct">&mdash;</td></tr>
+              <tr><td>13-Manifold</td><td id="tManUs">&mdash;</td><td id="tManMs">&mdash;</td><td id="tManPct">&mdash;</td></tr>
+              <tr><td>Convolutions</td><td id="tConvUs">&mdash;</td><td id="tConvMs">&mdash;</td><td id="tConvPct">&mdash;</td></tr>
+              <tr><td>Dense Head</td><td id="tDenseUs">&mdash;</td><td id="tDenseMs">&mdash;</td><td id="tDensePct">&mdash;</td></tr>
+              <tr><td>Softmax</td><td id="tSoftUs">&mdash;</td><td id="tSoftMs">&mdash;</td><td id="tSoftPct">&mdash;</td></tr>
+              <tr style="font-weight: 600; color: var(--text);"><td>Total Latency</td><td id="tTotUs">&mdash;</td><td id="tTotMs">&mdash;</td><td>100.0%</td></tr>
             </tbody>
           </table>
 
-          <div style="font-weight: 700; font-size: 0.85rem; margin-top: 0.6rem;">Host Engine &amp; Go Runtime Health</div>
+          <div class="card-title" style="margin-top: 0.4rem;">
+            <span>Runtime</span>
+          </div>
           <div class="stat-grid-4">
             <div class="stat-box">
-              <span class="stat-box-title">Engine Speed</span>
-              <span class="stat-box-val emerald" id="perfThroughput">&mdash;</span>
-              <span class="stat-box-sub">Inferences / sec</span>
+              <span class="stat-box-title">Throughput</span>
+              <span class="stat-box-val" id="perfThroughput">&mdash;</span>
+              <span class="stat-box-sub">inf / sec</span>
             </div>
             <div class="stat-box">
-              <span class="stat-box-title">Avg Latency (30f)</span>
-              <span class="stat-box-val accent" id="perfAvgLatency">&mdash;</span>
-              <span class="stat-box-sub">Rolling Window</span>
+              <span class="stat-box-title">Avg Latency</span>
+              <span class="stat-box-val" id="perfAvgLatency">&mdash;</span>
+              <span class="stat-box-sub">30f window</span>
             </div>
             <div class="stat-box">
-              <span class="stat-box-title">Go Heap Alloc</span>
-              <span class="stat-box-val purple" id="perfHeapAlloc">&mdash;</span>
-              <span class="stat-box-sub">Active Memory</span>
+              <span class="stat-box-title">Heap Alloc</span>
+              <span class="stat-box-val" id="perfHeapAlloc">&mdash;</span>
+              <span class="stat-box-sub">Go Runtime</span>
             </div>
             <div class="stat-box">
               <span class="stat-box-title">GC Cycles</span>
-              <span class="stat-box-val amber" id="perfNumGC">&mdash;</span>
-              <span class="stat-box-sub">Total Collections</span>
+              <span class="stat-box-val" id="perfNumGC">&mdash;</span>
+              <span class="stat-box-sub">Collections</span>
             </div>
           </div>
         </div>
@@ -4273,109 +4279,105 @@ const webAppHTML = `<!DOCTYPE html>
       <!-- Tab 3: 13-Channel Manifold -->
       <div class="tab-pane" id="tab-manifold">
         <div class="card">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <span style="font-weight: 700; font-size: 0.9rem;">13-Channel Spatial Difference Manifold</span>
-              <div style="font-size: 0.72rem; color: var(--text-muted);">Base Grayscale + 4 Diagonal Derivatives + 8 Chess Knight-Move Operators</div>
-            </div>
-            <div style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem;">
-              <span>Colormap:</span>
-              <select id="cmapSelect" style="background: var(--bg-card-alt); border: 1px solid var(--border-bright); color: var(--text-primary); padding: 0.25rem 0.5rem; border-radius: 0.35rem; font-size: 0.75rem;">
-                <option value="turbo">Turbo (Thermal)</option>
-                <option value="neon" selected>Neon Cyan</option>
-                <option value="emerald">Emerald</option>
+          <div class="card-title">
+            <span>13-Channel Spatial Manifold</span>
+            <div style="display: flex; align-items: center; gap: 0.3rem; font-size: 0.72rem;">
+              <span style="color: var(--text-muted);">Colormap:</span>
+              <select id="cmapSelect" style="background: var(--card-sub); border: 1px solid var(--border); color: var(--text); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.72rem;">
                 <option value="gray">Grayscale</option>
+                <option value="neon" selected>Monochrome / Cyan</option>
+                <option value="emerald">Emerald</option>
+                <option value="turbo">Thermal</option>
               </select>
             </div>
           </div>
 
-          <div class="manifold-grid" id="manifoldGrid">
-            <!-- 13 Channel Cards generated dynamically -->
-          </div>
+          <div class="manifold-grid" id="manifoldGrid"></div>
         </div>
       </div>
 
       <!-- Tab 4: Layer Activations -->
       <div class="tab-pane" id="tab-layers">
         <div class="card">
-          <div style="font-weight: 700; font-size: 0.9rem;">Feature Hierarchy &amp; Intermediate Activations</div>
-          <div style="font-size: 0.75rem; color: var(--text-secondary); background: var(--bg-card-alt); padding: 0.6rem; border-radius: 0.4rem; border: 1px solid var(--border-color); font-family: monospace;">
-            [1×28×28] ➔ [13×28×28] ➔ Conv1[16×28×28] ➔ MaxPool[16×14×14] ➔ Conv2[32×14×14] ➔ MaxPool[32×7×7] ➔ Pool[32×4×4=512] ➔ FC1[128] ➔ FC2[K]
+          <div class="card-title">
+            <span>Intermediate Activations</span>
+          </div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--mono); background: var(--card-sub); padding: 0.5rem; border-radius: 4px; border: 1px solid var(--border);">
+            [1×28×28] ➔ [13×28×28] ➔ Conv1 ➔ MaxPool ➔ Conv2 ➔ MaxPool ➔ Pool[512] ➔ FC1[128] ➔ Softmax
           </div>
 
           <div class="stat-grid-3">
             <div class="stat-box">
-              <span class="stat-box-title">Conv1 Activation</span>
-              <span class="stat-box-val accent" id="actConv1Mean">&mdash;</span>
+              <span class="stat-box-title">Conv1</span>
+              <span class="stat-box-val" id="actConv1Mean">&mdash;</span>
               <span class="stat-box-sub" id="actConv1Sparsity">Sparsity: &mdash;%</span>
             </div>
             <div class="stat-box">
-              <span class="stat-box-title">Conv2 Activation</span>
-              <span class="stat-box-val cyan" id="actConv2Mean">&mdash;</span>
+              <span class="stat-box-title">Conv2</span>
+              <span class="stat-box-val" id="actConv2Mean">&mdash;</span>
               <span class="stat-box-sub" id="actConv2Sparsity">Sparsity: &mdash;%</span>
             </div>
             <div class="stat-box">
-              <span class="stat-box-title">512-D Latent Norm</span>
-              <span class="stat-box-val emerald" id="actPoolNorm">&mdash;</span>
-              <span class="stat-box-sub">AdaptiveAvgPool L2</span>
+              <span class="stat-box-title">Pool Norm</span>
+              <span class="stat-box-val" id="actPoolNorm">&mdash;</span>
+              <span class="stat-box-sub">512-D L2</span>
             </div>
           </div>
 
-          <!-- FC1 128-Neuron Vector Visualizer -->
           <div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
-              <span style="font-weight: 600; font-size: 0.8rem;">FC1 Dense Hidden Vector (128 Dimensions)</span>
-              <span style="font-size: 0.72rem; color: var(--text-muted);" id="fc1ActiveLabel">Active: &mdash; / 128</span>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+              <span style="font-size: 0.72rem; font-weight: 500; color: var(--text-muted);">FC1 Latent Vector (128-D)</span>
+              <span style="font-size: 0.68rem; color: var(--text-muted); font-family: var(--mono);" id="fc1ActiveLabel">Active: &mdash; / 128</span>
             </div>
-            <div class="vector-chart" id="fc1VectorChart">
-              <!-- 128 bars generated dynamically -->
-            </div>
+            <div class="vector-chart" id="fc1VectorChart"></div>
           </div>
         </div>
       </div>
 
-      <!-- Tab 5: Model Architecture Specs -->
+      <!-- Tab 5: Architecture -->
       <div class="tab-pane" id="tab-arch">
         <div class="card">
-          <div style="font-weight: 700; font-size: 0.9rem;">DiagonalNet Architecture &amp; Parameter Topology</div>
+          <div class="card-title">
+            <span>Model Specifications</span>
+          </div>
           
           <div class="stat-grid-3">
             <div class="stat-box">
-              <span class="stat-box-title">Total Parameters</span>
-              <span class="stat-box-val accent" id="archTotalParams">&mdash;</span>
-              <span class="stat-box-sub" id="archWeightsSize">&mdash; KB Memory</span>
+              <span class="stat-box-title">Parameters</span>
+              <span class="stat-box-val" id="archTotalParams">&mdash;</span>
+              <span class="stat-box-sub" id="archWeightsSize">&mdash; KB</span>
             </div>
             <div class="stat-box">
-              <span class="stat-box-title">Inference FLOPs</span>
-              <span class="stat-box-val emerald">~4.88 MFLOPs</span>
-              <span class="stat-box-sub">Sub-8ms CPU Target</span>
+              <span class="stat-box-title">Compute FLOPs</span>
+              <span class="stat-box-val">~4.88 M</span>
+              <span class="stat-box-sub">Sub-8ms target</span>
             </div>
             <div class="stat-box">
               <span class="stat-box-title">Binary Format</span>
-              <span class="stat-box-val purple">DIAGON01</span>
-              <span class="stat-box-sub">LittleEndian Float32</span>
+              <span class="stat-box-val">DIAGON01</span>
+              <span class="stat-box-sub">Float32 LE</span>
             </div>
           </div>
 
-          <table class="data-table" style="margin-top: 0.5rem;">
+          <table class="data-table" style="margin-top: 0.4rem;">
             <thead>
               <tr>
-                <th>Layer Name</th>
+                <th>Layer</th>
                 <th>Type</th>
-                <th>Input Dim</th>
-                <th>Output Dim</th>
-                <th>Trainable Parameters</th>
+                <th>In</th>
+                <th>Out</th>
+                <th>Params</th>
               </tr>
             </thead>
             <tbody id="archTableBody">
-              <tr><td>13-Ch Spatial Manifold</td><td>ManifoldCalculus</td><td>1 &times; 28 &times; 28</td><td>13 &times; 28 &times; 28</td><td>0 (Pure Calculus)</td></tr>
-              <tr><td>Conv2D Stage 1</td><td>Conv2D (K=3, S=1, P=1)</td><td>13 &times; 28 &times; 28</td><td>16 &times; 28 &times; 28</td><td>1,888 (1,872 W + 16 B)</td></tr>
-              <tr><td>ReLU1 + MaxPool1</td><td>ReLU + MaxPool2D(2)</td><td>16 &times; 28 &times; 28</td><td>16 &times; 14 &times; 14</td><td>0</td></tr>
-              <tr><td>Conv2D Stage 2</td><td>Conv2D (K=3, S=1, P=1)</td><td>16 &times; 14 &times; 14</td><td>32 &times; 14 &times; 14</td><td>4,640 (4,608 W + 32 B)</td></tr>
-              <tr><td>ReLU2 + MaxPool2</td><td>ReLU + MaxPool2D(2)</td><td>32 &times; 14 &times; 14</td><td>32 &times; 7 &times; 7</td><td>0</td></tr>
-              <tr><td>Adaptive AvgPool</td><td>AdaptiveAvgPool2D(4x4)</td><td>32 &times; 7 &times; 7</td><td>32 &times; 4 &times; 4 (512)</td><td>0</td></tr>
-              <tr><td>Dense Head FC1</td><td>Linear + ReLU + Drop(0.2)</td><td>512</td><td>128</td><td>65,664 (65,536 W + 128 B)</td></tr>
-              <tr><td>Classifier Head FC</td><td>Linear + Softmax</td><td>128</td><td id="archOutputClasses">K Classes</td><td id="archFCParams">&mdash;</td></tr>
+              <tr><td>Manifold</td><td>ManifoldCalculus</td><td>1&times;28&times;28</td><td>13&times;28&times;28</td><td>0</td></tr>
+              <tr><td>Conv1</td><td>Conv2D (3&times;3)</td><td>13&times;28&times;28</td><td>16&times;28&times;28</td><td>1,888</td></tr>
+              <tr><td>Pool1</td><td>MaxPool2D(2)</td><td>16&times;28&times;28</td><td>16&times;14&times;14</td><td>0</td></tr>
+              <tr><td>Conv2</td><td>Conv2D (3&times;3)</td><td>16&times;14&times;14</td><td>32&times;14&times;14</td><td>4,640</td></tr>
+              <tr><td>Pool2</td><td>MaxPool2D(2)</td><td>32&times;14&times;14</td><td>32&times;7&times;7</td><td>0</td></tr>
+              <tr><td>Adaptive</td><td>AvgPool2D(4&times;4)</td><td>32&times;7&times;7</td><td>512</td><td>0</td></tr>
+              <tr><td>FC1</td><td>Linear+ReLU</td><td>512</td><td>128</td><td>65,664</td></tr>
+              <tr><td>Classifier</td><td>Linear+Softmax</td><td>128</td><td id="archOutputClasses">K</td><td id="archFCParams">&mdash;</td></tr>
             </tbody>
           </table>
         </div>
@@ -4383,28 +4385,28 @@ const webAppHTML = `<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Channel Zoom Modal -->
+  <!-- Channel Modal -->
   <div class="modal-overlay" id="channelModal">
     <div class="modal-box">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-weight: 700;" id="modalChannelTitle">Channel Details</span>
+        <span style="font-weight: 600; font-size: 0.85rem;" id="modalChannelTitle">Channel Details</span>
         <button class="btn-action" id="modalCloseBtn">&times; Close</button>
       </div>
-      <div style="display: flex; justify-content: center; padding: 1rem 0;">
-        <canvas id="modalCanvas" width="28" height="28" style="width: 224px; height: 224px; image-rendering: pixelated; border-radius: 0.5rem; background: #000; border: 2px solid var(--border-bright);"></canvas>
+      <div style="display: flex; justify-content: center; padding: 0.5rem 0;">
+        <canvas id="modalCanvas" width="28" height="28" style="width: 196px; height: 196px; image-rendering: pixelated; border-radius: 6px; background: #000; border: 1px solid var(--border);"></canvas>
       </div>
       <div class="stat-grid-3">
         <div class="stat-box">
-          <span class="stat-box-title">Mean Energy</span>
-          <span class="stat-box-val accent" id="modalEnergy">&mdash;</span>
+          <span class="stat-box-title">Energy</span>
+          <span class="stat-box-val" id="modalEnergy">&mdash;</span>
         </div>
         <div class="stat-box">
-          <span class="stat-box-title">Peak Value</span>
-          <span class="stat-box-val emerald" id="modalPeak">&mdash;</span>
+          <span class="stat-box-title">Peak</span>
+          <span class="stat-box-val" id="modalPeak">&mdash;</span>
         </div>
         <div class="stat-box">
           <span class="stat-box-title">Sparsity</span>
-          <span class="stat-box-val amber" id="modalSparsity">&mdash;</span>
+          <span class="stat-box-val" id="modalSparsity">&mdash;</span>
         </div>
       </div>
     </div>
@@ -4512,13 +4514,13 @@ const webAppHTML = `<!DOCTYPE html>
       prev28Ctx.fillStyle = '#000000';
       prev28Ctx.fillRect(0, 0, 28, 28);
     }
-    document.getElementById('classList').innerHTML = '<div style="color: var(--text-secondary); font-size: 0.85rem; text-align: center; padding: 2rem 0;">Canvas cleared. Draw a sketch.</div>';
+    document.getElementById('classList').innerHTML = '<div style="color: var(--text-muted); font-size: 0.78rem; text-align: center; padding: 1.5rem 0;">Canvas cleared. Draw a sketch.</div>';
     resetStats();
   }
 
   function resetStats() {
     ['geomBBoxDim', 'geomAspect', 'geomFgCount', 'geomDensity', 'geomCentroid', 'geomCoverage',
-     'infoEntropy', 'infoUncertainty', 'infoPerplexity', 'infoGini'].forEach(id => {
+     'infoEntropy', 'infoEntropyMax', 'infoUncertainty', 'infoPerplexity', 'infoGini'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerText = '—';
     });
@@ -4633,7 +4635,6 @@ const webAppHTML = `<!DOCTYPE html>
     }
   }
 
-  // Colormap utilities for heatmaps
   function getTurboColor(t) {
     const r = Math.min(255, Math.max(0, Math.round(255 * (0.1357 + 4.5 * t - 14.5 * t * t + 16.5 * t * t * t - 6.5 * t * t * t * t))));
     const g = Math.min(255, Math.max(0, Math.round(255 * (0.0914 + 2.1 * t + 4.8 * t * t - 14.1 * t * t * t + 8.1 * t * t * t * t))));
@@ -4646,7 +4647,6 @@ const webAppHTML = `<!DOCTYPE html>
     if (cmap === 'turbo') return getTurboColor(t);
     if (cmap === 'emerald') return [Math.round(16 * t), Math.round(185 * t + 70 * t * t), Math.round(129 * t)];
     if (cmap === 'gray') return [val, val, val];
-    // Neon Cyan (default)
     return [Math.round(6 * t + 30 * t * t), Math.round(182 * t + 73 * t * t), Math.round(212 * t + 43 * t * t)];
   }
 
@@ -4658,7 +4658,6 @@ const webAppHTML = `<!DOCTYPE html>
     });
   }
 
-  // Temperature slider recalibration
   if (tempSlider && tempVal) {
     tempSlider.addEventListener('input', () => {
       const T = parseFloat(tempSlider.value);
@@ -4681,7 +4680,6 @@ const webAppHTML = `<!DOCTYPE html>
     });
     const newProbs = expVals.map(e => e / sumExp);
     
-    // Update confidences in copy
     const confs = lastTelemetry.confidences.map((c, i) => ({
       ...c,
       confidence: newProbs[i]
@@ -4697,61 +4695,45 @@ const webAppHTML = `<!DOCTYPE html>
       return;
     }
 
-    // Rolling latency & FPS
     rollingLatencies.push(data.latency_ms);
     if (rollingLatencies.length > 30) rollingLatencies.shift();
     const avgLat = rollingLatencies.reduce((a, b) => a + b, 0) / rollingLatencies.length;
     const fps = data.latency_ms > 0 ? (1000.0 / data.latency_ms).toFixed(0) : '999';
 
-    // Hero Banner
     document.getElementById('topClass').innerText = data.predicted_class;
     document.getElementById('topConfidence').innerText = (data.confidence * 100).toFixed(1) + '%';
-    document.getElementById('latencyBadge').innerText = '⚡ ' + data.latency_ms.toFixed(2) + ' ms';
+    document.getElementById('latencyBadge').innerText = data.latency_ms.toFixed(2) + ' ms';
     document.getElementById('fpsBadge').innerText = fps + ' inf/sec';
     const hdrFps = document.getElementById('hdrFps');
     if (hdrFps) hdrFps.innerText = 'FPS: ' + fps;
 
-    // Render Probabilities
     renderProbabilityList(data.confidences);
 
-    // Deep Stats Rendering
     if (data.stats) {
       const s = data.stats;
       
-      // Margin & Entropy badges
       const marginEl = document.getElementById('marginBadge');
       if (marginEl) marginEl.innerText = 'Margin: +' + (s.top_margin * 100).toFixed(1) + '%';
       const entEl = document.getElementById('entropyBadge');
       if (entEl) entEl.innerText = 'H(P): ' + s.entropy_bits.toFixed(2) + ' bits';
 
-      // Decision Theory Tab
       document.getElementById('infoEntropy').innerText = s.entropy_bits.toFixed(3);
-      document.getElementById('infoEntropyMax').innerText = 'Max: ' + s.max_entropy_bits.toFixed(2) + ' bits';
+      document.getElementById('infoEntropyMax').innerText = 'Max: ' + s.max_entropy_bits.toFixed(2);
       document.getElementById('infoUncertainty').innerText = s.uncertainty_pct.toFixed(1) + '%';
       document.getElementById('infoPerplexity').innerText = s.perplexity.toFixed(2);
       document.getElementById('infoGini').innerText = s.gini_impurity.toFixed(3);
 
-      // Logits Table
       renderLogitsTable(data.confidences, s.raw_logits);
-
-      // Geometry & 28x28 Preview
       renderGeometry(s.geometry);
-
-      // Performance Profiler Tab
       renderPerformance(s.timing, s.runtime, avgLat);
-
-      // 13-Channel Manifold
       renderManifold(s.manifold);
-
-      // Layer Activations
       renderLayers(s.layers);
 
-      // Header System Info
       if (s.runtime) {
         const hdrCores = document.getElementById('hdrCores');
-        if (hdrCores) hdrCores.innerText = '⚡ CPU Cores: ' + s.runtime.cpu_cores;
+        if (hdrCores) hdrCores.innerText = 'CPU ' + s.runtime.cpu_cores;
         const hdrMem = document.getElementById('hdrMem');
-        if (hdrMem) hdrMem.innerText = 'RAM: ' + s.runtime.heap_alloc_mb.toFixed(1) + ' MB';
+        if (hdrMem) hdrMem.innerText = 'RAM ' + s.runtime.heap_alloc_mb.toFixed(1) + ' MB';
       }
     }
   }
@@ -4768,10 +4750,10 @@ const webAppHTML = `<!DOCTYPE html>
       row.className = 'class-row' + (isTop ? ' top' : '');
       row.innerHTML =
         '<div class="class-info">' +
-          '<span style="' + (isTop ? 'color: var(--accent-blue); font-weight:700;' : '') + '">' +
-            (idx < 3 ? '<b style="color:var(--accent-cyan);">#' + (idx+1) + '</b> ' : '') + item.class_name +
+          '<span style="' + (isTop ? 'color: var(--text); font-weight:600;' : 'color: var(--text-sub);') + '">' +
+            item.class_name +
           '</span>' +
-          '<span style="' + (isTop ? 'color: var(--accent-emerald); font-weight:700;' : 'color: var(--text-secondary);') + '">' + pct + '%</span>' +
+          '<span style="' + (isTop ? 'color: var(--text); font-weight:600;' : 'color: var(--text-muted);') + '">' + pct + '%</span>' +
         '</div>' +
         '<div class="progress-bg">' +
           '<div class="progress-fill" style="width: ' + pct + '%"></div>' +
@@ -4792,10 +4774,10 @@ const webAppHTML = `<!DOCTYPE html>
       const ez = Math.exp(z);
       const tr = document.createElement('tr');
       tr.innerHTML =
-        '<td style="color: var(--accent-blue); font-weight: 600;">' + c.class_name + '</td>' +
+        '<td style="color: var(--text); font-weight: 500;">' + c.class_name + '</td>' +
         '<td>' + (z >= 0 ? '+' : '') + z.toFixed(4) + '</td>' +
         '<td>' + (ez > 1000 ? ez.toExponential(2) : ez.toFixed(3)) + '</td>' +
-        '<td style="color: var(--accent-emerald); font-weight: 600;">' + (c.confidence * 100).toFixed(2) + '%</td>';
+        '<td style="color: var(--text); font-weight: 500;">' + (c.confidence * 100).toFixed(2) + '%</td>';
       tbody.appendChild(tr);
     });
   }
@@ -4809,7 +4791,6 @@ const webAppHTML = `<!DOCTYPE html>
     document.getElementById('geomCentroid').innerText = '(' + geom.centroid_x.toFixed(1) + ', ' + geom.centroid_y.toFixed(1) + ')';
     document.getElementById('geomCoverage').innerText = geom.canvas_coverage_pct.toFixed(1) + '%';
 
-    // Render 28x28 Resampled Preview
     if (prev28Ctx && geom.resampled_28x28) {
       const imgData = prev28Ctx.createImageData(28, 28);
       for (let i = 0; i < 784; i++) {
@@ -4849,7 +4830,6 @@ const webAppHTML = `<!DOCTYPE html>
     document.getElementById('tTotUs').innerText = timing.total_us.toFixed(1) + ' µs';
     document.getElementById('tTotMs').innerText = (timing.total_us / 1000).toFixed(3) + ' ms';
 
-    // Update stacked bar segments
     const segments = document.querySelectorAll('.stage-segment');
     if (segments.length >= 5) {
       segments[0].style.width = ((timing.preprocess_us / tot) * 100) + '%';
@@ -4945,7 +4925,6 @@ const webAppHTML = `<!DOCTYPE html>
     document.getElementById('actPoolNorm').innerText = layers.pool512_l2_norm.toFixed(2);
     document.getElementById('fc1ActiveLabel').innerText = 'Active: ' + layers.fc1_active_neurons + ' / 128 (' + (100 - layers.fc1_sparsity_pct).toFixed(1) + '%)';
 
-    // Render FC1 Vector Bars
     const chart = document.getElementById('fc1VectorChart');
     if (chart && layers.fc1_hidden_vector) {
       chart.innerHTML = '';
@@ -4956,17 +4935,16 @@ const webAppHTML = `<!DOCTYPE html>
         const hPct = Math.min(100, Math.max(4, (v / maxVal) * 100));
         bar.style.height = hPct + '%';
         if (v === 0) {
-          bar.style.background = '#334155';
-          bar.style.height = '3px';
+          bar.style.background = '#27272a';
+          bar.style.height = '2px';
         } else {
-          bar.style.background = 'linear-gradient(to top, var(--accent-blue), var(--accent-cyan))';
+          bar.style.background = '#fafafa';
         }
         chart.appendChild(bar);
       });
     }
   }
 
-  // Export JSON Diagnostics Telemetry
   document.getElementById('btnExportJson').addEventListener('click', () => {
     if (!lastTelemetry) {
       alert('Draw something first to generate diagnostics telemetry!');
@@ -4985,7 +4963,6 @@ const webAppHTML = `<!DOCTYPE html>
     });
   });
 
-  // Initial metadata query
   fetch('/api/info').then(r => r.json()).then(info => {
     if (info) {
       if (info.classes) {
@@ -4997,7 +4974,7 @@ const webAppHTML = `<!DOCTYPE html>
           row.innerHTML =
             '<div class="class-info">' +
               '<span>' + c + '</span>' +
-              '<span style="color: var(--text-secondary);">0.0%</span>' +
+              '<span style="color: var(--text-muted);">0.0%</span>' +
             '</div>' +
             '<div class="progress-bg"><div class="progress-fill" style="width: 0%"></div></div>';
           list.appendChild(row);
@@ -5014,7 +4991,7 @@ const webAppHTML = `<!DOCTYPE html>
       }
       if (info.cpu_cores) {
         const hdrCores = document.getElementById('hdrCores');
-        if (hdrCores) hdrCores.innerText = '⚡ CPU Cores: ' + info.cpu_cores;
+        if (hdrCores) hdrCores.innerText = 'CPU ' + info.cpu_cores;
       }
     }
   }).catch(() => {});
