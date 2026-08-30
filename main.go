@@ -78,6 +78,8 @@ func PrintHardwareDiagnostics() {
 // 2. CONTIGUOUS 1D/3D TENSOR ENGINE
 // ============================================================================
 
+// --- 2.1 TENSOR STRUCT & FLAT MEMORY ALLOCATION ---
+
 // Tensor represents a flat contiguous 1D slice representation for multi-dimensional 3D tensors [C x H x W]
 // to maximize CPU L1/L2 cache locality and eliminate pointer chasing.
 type Tensor struct {
@@ -97,6 +99,8 @@ func NewTensor(c, h, w int) *Tensor {
 	}
 }
 
+// --- 2.2 FLAT-STRIDED INDEXING & O(1) ELEMENT ACCESS ---
+
 // Index computes the contiguous 1D slice index for coordinates (c, y, x):
 // Index(c, y, x) = c * (Height * Width) + y * Width + x
 func (t *Tensor) Index(c, y, x int) int {
@@ -112,6 +116,8 @@ func (t *Tensor) Get(c, y, x int) float32 {
 func (t *Tensor) Set(c, y, x int, val float32) {
 	t.Data[c*(t.Height*t.Width)+y*t.Width+x] = val
 }
+
+// --- 2.3 MEMORY ZEROING, SIZING & DEEP COPY ISOLATION ---
 
 // Zero resets all elements in the tensor to 0
 func (t *Tensor) Zero() {
@@ -677,8 +683,10 @@ func LoadModelWeights(path string, params []*Parameter) ([]string, error) {
 }
 
 // ============================================================================
-// 6. DATASET SCANNER & DYNAMIC CLASS MAPPING (PROMPTS 29 & 30)
+// 6. DATASET SCANNER, IMAGE PREPROCESSING & 15X DATA AUGMENTATION
 // ============================================================================
+
+// --- 6.1 DYNAMIC DATASET SCANNER & CLASS MAPPING ---
 
 // DatasetMetadata stores dynamic bi-directional mappings between class names and integer indices.
 type DatasetMetadata struct {
@@ -822,6 +830,8 @@ func ScanDataset(dataDir string) (*Dataset, error) {
 // ImageItem is an alias for ImageSample representing a dataset item.
 type ImageItem = ImageSample
 
+// --- 6.2 8-BIT GRAYSCALE LOADER & TENSOR NORMALIZATION ---
+
 // LoadImageFromFile opens a PNG or JPEG file from disk, decodes it, and converts it into
 // a standard 8-bit grayscale luminosity representation (*image.Gray) using pure Go standard library.
 func LoadImageFromFile(path string) (*image.Gray, error) {
@@ -859,6 +869,8 @@ func GrayImageToTensor(gray *image.Gray) *Tensor {
 	}
 	return t
 }
+
+// --- 6.3 BOUNDING BOX EXTRACTION & BLANK FILTERING ---
 
 // BoundingBox defines the tight rectangular coordinate bounds of foreground pixels.
 type BoundingBox struct {
@@ -978,6 +990,8 @@ func FindBoundingBoxTensor(t *Tensor, threshold float32) *BoundingBox {
 	}
 }
 
+// --- 6.4 SCALE-INVARIANT PROPORTIONAL PADDING & CENTERING ---
+
 // PadAndCenter centers the cropped bounding box foreground into a square canvas
 // with scale-invariant proportional padding (22% margin per side, ~70% foreground occupancy).
 //
@@ -1073,6 +1087,8 @@ func PadAndCenterTensor(src *Tensor, bbox *BoundingBox) *Tensor {
 	return dst
 }
 
+// --- 6.5 PEAK STROKE LUMINOSITY CONTRAST STRETCHING ---
+
 // ContrastStretch applies adaptive peak luminosity stretching to normalize faint and heavy pen strokes.
 //
 // Formulation:
@@ -1150,6 +1166,8 @@ func ContrastStretchTensor(src *Tensor) *Tensor {
 	}
 	return dst
 }
+
+// --- 6.6 SUB-PIXEL BILINEAR RESAMPLING (CANONICAL INPUTSIZE) ---
 
 // ResizeBilinear resamples an *image.Gray to target dimensions (targetW x targetH)
 // using sub-pixel bilinear interpolation with continuous half-pixel centering.
@@ -1577,6 +1595,8 @@ func ScaleImage(src *image.Gray, scaleX, scaleY float64) *image.Gray {
 	return dst
 }
 
+// --- 6.7 15-VARIANT GEOMETRY & MORPHOLOGY DATA AUGMENTOR ---
+
 // AugmentImage generates 15 geometric and morphological variants per training image:
 //  1. Original image
 //  2-5. Rotations: -15 deg, +15 deg, -10 deg, +10 deg
@@ -1632,6 +1652,8 @@ func AugmentImage(src *image.Gray) []*image.Gray {
 
 	return variants
 }
+
+// --- 6.8 STRATIFIED TRAIN / VALIDATION DATASET SPLITTER ---
 
 // TrainTestSplit partitions samples into stratified train and validation sets ensuring
 // equal/proportional class representation in both splits according to testRatio.
@@ -1752,6 +1774,8 @@ func ComputeFileSHA256(path string) (string, error) {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:]), nil
 }
+
+// --- 6.9 AUTOMATED DATASET QUALITY, HEALTH & STROKE DENSITY AUDITOR ---
 
 // DatasetAuditReport aggregates health metrics across all classes in the dataset.
 type DatasetAuditReport struct {
@@ -2018,6 +2042,8 @@ func PrintAuditReport(report *DatasetAuditReport) {
 // 7. 13-CHANNEL SPATIAL DIFFERENCE MANIFOLD CALCULUS
 // ============================================================================
 
+// --- 7.1 BOUNDARY CLAMPING & FAST ABSOLUTE VALUE PRIMITIVES ---
+
 // Clamp restricts val within the closed interval [minVal, maxVal].
 func clamp(val, minVal, maxVal int) int {
 	if val < minVal {
@@ -2036,6 +2062,8 @@ func abs32(v float32) float32 {
 	}
 	return v
 }
+
+// --- 7.2 DIRECTIONAL OFFSETS: 4 IMMEDIATE DIAGONALS & 8 CHESS KNIGHT-MOVES ---
 
 // Directional offset vectors for 13-channel spatial difference manifold:
 var (
@@ -2064,6 +2092,8 @@ var (
 		{+2, +1}, // Ch 12: Knight 8
 	}
 )
+
+// --- 7.3 ROW-PARALLEL MULTI-CORE 13-CHANNEL MANIFOLD GENERATOR ---
 
 // ComputeManifold transforms a flat grayscale image slice [h*w] into a 13-channel spatial difference manifold [13*h*w]
 // parallelized row-by-row across runtime.NumCPU() Goroutines.
@@ -2136,6 +2166,8 @@ func ComputeManifoldIntoSlice(input []float32, out []float32, h, w int) {
 	wg.Wait()
 }
 
+// --- 7.4 TENSOR-LEVEL IN-PLACE & ALLOCATING MANIFOLD TRANSFORMERS ---
+
 // ComputeManifoldInto transforms a 1-channel Tensor into a 13-channel Tensor in-place using row-parallel multi-threading.
 func ComputeManifoldInto(input *Tensor, output *Tensor) {
 	H, W := input.Height, input.Width
@@ -2153,8 +2185,10 @@ func ComputeManifoldTensor(input *Tensor) *Tensor {
 }
 
 // ============================================================================
-// 7. CONVOLUTIONAL, POOLING & DENSE NEURAL NETWORK LAYERS
+// 8. CONVOLUTIONAL, POOLING & DENSE NEURAL NETWORK LAYERS
 // ============================================================================
+
+// --- 8.1 2D CONVOLUTIONAL LAYER & ANALYTICAL JACOBIAN BACKPROPAGATION ---
 
 // Conv2DLayer implements a multi-channel 2D convolutional layer with arbitrary kernel size, stride, and padding.
 type Conv2DLayer struct {
@@ -2488,6 +2522,8 @@ func (l *Conv2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Tensor) {
 	wgIn.Wait()
 }
 
+// --- 8.2 2D MAX POOLING LAYER & SPARSE ARGMAX BACKWARD ROUTING ---
+
 // MaxPool2DLayer performs 2D max pooling with ArgMax coordinate caching for exact sparse backpropagation.
 type MaxPool2DLayer struct {
 	KernelSize int
@@ -2583,6 +2619,8 @@ func (l *MaxPool2DLayer) Backward(gradOutput *Tensor) *Tensor {
 	}
 	return gradInput
 }
+
+// --- 8.3 2D ADAPTIVE AVERAGE POOLING LAYER (SPATIAL BINNING) ---
 
 // AdaptiveAvgPool2DLayer dynamically pools arbitrary input feature dimensions to a fixed [TargetH x TargetW] output.
 type AdaptiveAvgPool2DLayer struct {
@@ -2702,6 +2740,8 @@ func (l *AdaptiveAvgPool2DLayer) BackwardInto(gradOutput *Tensor, gradInput *Ten
 	}
 }
 
+// --- 8.4 FULLY CONNECTED (DENSE) LINEAR LAYER & JACOBIAN MATMUL ---
+
 // LinearLayer implements a fully connected feedforward layer with vectorization and analytical Jacobian backpropagation.
 type LinearLayer struct {
 	Weights   *Parameter // Shape: [OutputDim, InputDim] -> flat size OutputDim * InputDim
@@ -2801,6 +2841,8 @@ func (l *LinearLayer) BackwardInto(gradOutput []float32, gradInput []float32) {
 	}
 }
 
+// --- 8.5 INVERTED BERNOULLI DROPOUT REGULARIZATION LAYER ---
+
 // DropoutLayer implements Inverted Dropout regularization (default p=0.2).
 type DropoutLayer struct {
 	DropRate float32 // p = 0.2
@@ -2896,6 +2938,8 @@ func ReLUGrad(x, gy float32) float32 {
 	}
 	return 0
 }
+
+// --- 8.6 RECTIFIED LINEAR UNIT (RELU) ACTIVATION LAYER ---
 
 // ReLULayer implements Rectified Linear Unit activation with analytical Jacobian backpropagation.
 // Forward:  y_i = max(0, x_i)
@@ -2995,6 +3039,8 @@ func LeakyReLUGrad(x, gy, alpha float32) float32 {
 	}
 	return alpha * gy
 }
+
+// --- 8.7 LEAKY RECTIFIED LINEAR UNIT (LEAKY RELU) ACTIVATION LAYER ---
 
 // LeakyReLULayer implements Leaky ReLU activation with analytical Jacobian backpropagation.
 // Forward:  y_i = x_i if x_i > 0 else alpha * x_i
@@ -3143,6 +3189,8 @@ func SoftmaxGradInto(probs []float32, gradOutput []float32, gradInput []float32)
 	}
 }
 
+// --- 8.8 NUMERICALLY STABLE SOFTMAX PROBABILITY LAYER ---
+
 // SoftmaxLayer implements a stateful Softmax probability distribution layer with analytical Jacobian autograd.
 type SoftmaxLayer struct {
 	LastProbs []float32
@@ -3180,6 +3228,8 @@ func (l *SoftmaxLayer) Backward(gradOutput []float32) []float32 {
 func (l *SoftmaxLayer) BackwardInto(gradOutput []float32, gradInput []float32) {
 	SoftmaxGradInto(l.LastProbs, gradOutput, gradInput)
 }
+
+// --- 8.9 CATEGORICAL CROSS-ENTROPY LOSS & ANALYTICAL LOGIT GRADIENTS ---
 
 // CategoricalCrossEntropy computes cross-entropy loss for target class index:
 // L = -ln(p_target + eps), eps = 1e-15
@@ -3298,7 +3348,7 @@ func (c *CategoricalCrossEntropyLoss) LossAndGradInto(logits []float32, targetCl
 }
 
 // ============================================================================
-// 8. END-TO-END MODEL ARCHITECTURE & MULTI-CORE BATCH TRAINER (Prompts 41 & 42)
+// 9. END-TO-END MODEL ARCHITECTURE & MULTI-CORE BATCH TRAINER
 // ============================================================================
 
 // Sample encapsulates an input feature tensor and integer class target.
@@ -3924,7 +3974,7 @@ func CountModelParameters(params []*Parameter) int {
 }
 
 // ============================================================================
-// 8. EMBEDDED HTML5 CANVAS & REAL-TIME WEB INFERENCE ENGINE (Prompts 46 - 48)
+// 10. EMBEDDED HTML5 CANVAS & REAL-TIME WEB INFERENCE SERVER
 // ============================================================================
 
 // webAppHTML embeds the complete single-page interactive drawing canvas application with deep neural diagnostics.
@@ -5684,7 +5734,7 @@ func StartInferenceServer(model *DiagonNetModel, classNames []string, port int, 
 }
 
 // ============================================================================
-// 9. CLI ROUTING & EXECUTION HANDLERS
+// 11. CLI ROUTING & EXECUTION HANDLERS
 // ============================================================================
 
 func printHelp() {
