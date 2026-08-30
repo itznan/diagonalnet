@@ -362,12 +362,16 @@ C:\diagonalnet\
 >
 > `serve` no longer fails silently here: it prints the load error, names the retrain command, and warns again if it starts on untrained weights.
 
-### Build
+### Build (Deterministic Reproducible Builds)
 
-Compile the native binary using the Go standard toolchain:
+Compile the native binary with byte-for-byte reproducible hash parity across any host OS (Windows, Linux, macOS):
 
 ```bash
-go build -o bin/diagonalnet.exe .
+# Windows binary (builds identical hash on Windows, Linux, or macOS)
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/diagonalnet.exe .
+
+# Linux binary (builds identical hash on Windows, Linux, or macOS)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/diagonalnet .
 ```
 
 ### Run Test Suite
