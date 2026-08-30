@@ -466,19 +466,22 @@ For complete details on how DiagonalNet eliminates heavyweight third-party packa
 
 | # | Package Normally Used | Category | Standard Library Replacement in DiagonalNet |
 | :-: | :--- | :--- | :--- |
-| 1 | `PyTorch` / `TensorFlow` / `LibTorch` | Deep Learning Engine & Autograd | Handcrafted contiguous tensors, analytical backpropagation Jacobian engine |
-| 2 | `pandas` / `polars` | Tabular DataFrames & Profiling | Custom dataset parsing using `encoding/csv`, `strconv`, `math`, `sort` |
-| 3 | `scikit-learn` (`StandardScaler`, `OneHotEncoder`) | Feature Preprocessing | Native normalization, min/max scaling, and one-hot encoding |
-| 4 | `scikit-learn` (`metrics`) | Model Evaluation Metrics | Native confusion matrix, precision, recall, Macro-F1, MSE, MAE, R² |
-| 5 | `scikit-learn` (`datasets`) | Benchmark Datasets | Embedded string constants and synthetic mathematical manifold generators |
-| 6 | `torchvision.datasets.ImageFolder` | Vision Dataset Loader | Recursive scanning via `os.ReadDir`, `path/filepath`, and `sort` |
-| 7 | `OpenCV` (`cv2`) / `Pillow` | Computer Vision & Image Processing | `image`, `image/color`, `image/draw`, `image/png`, `image/jpeg` |
-| 8 | `torch.optim.Adam` / `SGD` | Optimization Algorithms | Moment tracking with `math.Sqrt` and LittleEndian accumulators |
-| 9 | `CUDA` / `OpenMP` | Multithreading & Parallelism | `sync.WaitGroup`, Go goroutines, and `runtime.NumCPU()` |
-| 10 | `Flask` / `FastAPI` / `Express` | Web Backend & REST API | `net/http` and `encoding/json` |
-| 11 | `Chart.js` / `D3.js` / `Plotly` | Live Training Curves & Charts | Inline dynamic SVG paths and native HTML5 Canvas |
-| 12 | `ONNX` / `Pickle` / `SafeTensors` | Model Serialization | Custom `DIAGON01` binary format with `encoding/binary` |
-| 13 | `Albumentations` | Data Augmentation | Native matrix pixel transforms, 2D rotations, and coordinate shifts |
+| 1 | `PyTorch` / `TensorFlow` / `LibTorch` | Deep Learning Engine & Autograd | Handcrafted contiguous 1D/3D flat tensors, analytical backpropagation Jacobian autograd engine, Kaiming/He initialization |
+| 2 | `torchvision.datasets.ImageFolder` | Vision Dataset Loader & Scanner | Recursive scanning via `os.ReadDir`, `path/filepath`, and deterministic `sort.Strings` |
+| 3 | `OpenCV` (`cv2`) / `Pillow` (`PIL`) | Computer Vision & Geometric Preprocessing | Tight bounding box locator, proportional padding ($\approx 70\%$ occupancy), contrast stretching, and sub-pixel bilinear resampling via `image`, `image/color`, `image/draw`, `image/png`, `image/jpeg`, and `math` |
+| 4 | `Albumentations` / `imgaug` | Data Augmentation | Native continuous coordinate rotations ($\pm 10^\circ, \pm 15^\circ$), center-anchored scale/aspect jitter, affine horizontal shear ($\pm 0.20$), and $3\times 3$ morphological dilation/erosion |
+| 5 | `NumPy` / `SciPy` | Matrix Calculus & Tensor Math | Contiguous 1D flat slices (`[]float32`), constant-time stride indexing, Box-Muller Gaussian transforms (`math.Cos`, `math.Sin`, `math.Log`) |
+| 6 | `torch.optim` (`Adam`, `SGD`) | Optimization Algorithms | Moment tracking with `math.Sqrt`, time-step bias corrections ($\hat{m}_t, \hat{v}_t$), and $L_2$ weight decay regularization ($\lambda = 10^{-4}$) |
+| 7 | `torch.optim.lr_scheduler` | Learning Rate Scheduling | Native `StepLRScheduler` with milestone decay ($1.0 \to 0.5 \to 0.25$) and JSON configuration |
+| 8 | `CUDA` / `OpenMP` / `Ray` | Concurrency & Multi-Core Parallelism | `sync.WaitGroup`, Go goroutines, and `runtime.NumCPU()` for lock-free parallel replica training and row manifold calculus |
+| 9 | `scikit-learn` (`metrics`) | Model Evaluation & Profiling | Native confusion matrix, true/false positive tracking, precision, recall, and Macro-F1 score profiler |
+| 10 | `scikit-learn` (`model_selection`) | Stratified Dataset Splitting | Exact per-class proportional split allocation ($\lfloor N_c \cdot \text{testRatio} \rfloor$) and deterministic pseudo-random shuffling |
+| 11 | `pandas` / `ydata-profiling` | Dataset Health & Quality Auditor | Automated scanner using `crypto/sha256`, `encoding/hex`, `image`, and `fmt` for corrupt, blank, tiny outlier, and duplicate detection |
+| 12 | `ONNX` / `Pickle` / `SafeTensors` | Model Weight Serialization | Custom portable `DIAGON01` binary format with little-endian IEEE-754 floats via `encoding/binary` and `encoding/json` metadata |
+| 13 | `Flask` / `FastAPI` / `Express` | Web Backend & REST API | Native `net/http` server delivering static SPA, real-time sub-8ms `/api/predict`, and `/api/info` introspection |
+| 14 | `Chart.js` / `D3.js` / `React` | Live UI & Drawing Canvas | Embedded dark-themed HTML5 Canvas UI (`webAppHTML`) with touch/stylus support, keyboard shortcuts, and animated probability bars |
+| 15 | `webbrowser` (Python) | Default Browser Launcher | Cross-platform browser invocation via `os/exec` (`rundll32`, `open`, `xdg-open`) |
+| 16 | `pytest` / `torch.autograd.gradcheck` | Test Suite & Gradient Verification | Native Go `testing` harness with 54 passing tests, `net/http/httptest`, and finite-difference numerical Jacobian verification |
 
 ---
 

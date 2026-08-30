@@ -3,7 +3,7 @@ letter = "A"
 name = "Zero Dependencies"
 
 [project]
-name = "diagonnet"
+name = "diagonalnet"
 description = "Pure Go zero-dependency deep learning engine with 13-channel spatial difference manifold calculus, He initialization, Adam optimizer, and high-performance CPU runtime."
 language = "Go"
 go_version = "1.27.0"
