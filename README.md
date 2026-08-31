@@ -334,6 +334,7 @@ C:\diagonalnet\
 ├── LICENSE                 # MIT Open Source License
 ├── Makefile                # Cross-platform single-command build & test runner
 ├── README.md               # Architecture documentation, formulas, and user guide
+├── RUNNING.md              # Quick start and step-by-step execution guide
 ├── STDLIB.md               # Standard library replacements & zero-dep rationale
 ├── TRAINING_HISTORY.md     # Comprehensive training run comparisons, metrics & history
 ├── deps-proof.txt          # Proof log demonstrating zero third-party dependencies
@@ -351,6 +352,8 @@ C:\diagonalnet\
 
 ## Getting Started & CLI Usage
 
+> For a dedicated walkthrough with copy-pasteable commands, see **[RUNNING.md](RUNNING.md)**.
+
 > ### ⚠️ Checkpoint Compatibility
 >
 > The network now exposes **8 parameter buffers instead of 4** (`Conv1 W/B`, `Conv2 W/B`, `FC1 W/B`, `FC W/B`). `SaveModelWeights` and `LoadModelWeights` walk `Parameters()` sequentially, so the `DIAGON01` layout changed with it and **any `weights/*.bin` written before this change fails to load with `unexpected EOF`.**
@@ -358,10 +361,25 @@ C:\diagonalnet\
 > **Retrain before serving:**
 >
 > ```bash
-> diagonalnet train -profile normal -data data -model weights/diagonalnet_model.bin
+> go run . train -profile normal -data data -model weights/diagonalnet_model.bin
 > ```
 >
 > `serve` no longer fails silently here: it prints the load error, names the retrain command, and warns again if it starts on untrained weights.
+
+### Quick Start (Zero Build Required)
+
+You can run any command directly with Go:
+
+```bash
+# 1. Audit dataset
+go run . audit -data data
+
+# 2. Train model with recommended profile (~3-4 mins)
+go run . train -profile normal -data data -model weights/diagonalnet_model.bin
+
+# 3. Serve live web drawing canvas & REST API
+go run . serve -model weights/diagonalnet_model.bin -port 8081
+```
 
 ### Build (Deterministic Reproducible Builds)
 
@@ -398,28 +416,26 @@ DiagonalNet includes 4 pre-configured training profile templates:
 
 ```bash
 # Display help and usage instructions
-diagonalnet help
-# or: diagonalnet -help
+go run . help
+# or: .\bin\diagonalnet.exe help
 
 # Fast Training Profile (Quick validation in ~1 min)
-diagonalnet train -profile fast -data data
+go run . train -profile fast -data data
 
 # Normal Recommended Training Profile (~3-4 mins)
-diagonalnet train -profile normal -data data -model weights/diagonalnet_model.bin
+go run . train -profile normal -data data -model weights/diagonalnet_model.bin
 
 # Hardcore Deep Training Profile (Maximum 98%+ accuracy)
-diagonalnet train -profile hardcore -data data -model weights/diagonalnet_model.bin
+go run . train -profile hardcore -data data -model weights/diagonalnet_model.bin
 
 # Manual Custom Training Configuration
-diagonalnet train -data data -model weights/diagonalnet_model.bin -epochs 25 -lr 0.0018 -batch 32
+go run . train -data data -model weights/diagonalnet_model.bin -epochs 25 -lr 0.0018 -batch 32
 
 # Audit dataset structure and verify sample integrity
-diagonalnet audit -data data
-# or: diagonalnet -audit -data data
+go run . audit -data data
 
 # Start interactive HTTP dashboard and inference server
-diagonalnet serve -model weights/diagonalnet_model.bin -port 8081
-# or: diagonalnet -serve -port 8081
+go run . serve -model weights/diagonalnet_model.bin -port 8081
 ```
 
 ### Verify Zero Dependencies
