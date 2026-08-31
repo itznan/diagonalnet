@@ -11,6 +11,7 @@ bin/*
 
 # Model Weights & Checkpoints
 weights/*.bin
+!weights/diagonalnet_model.bin
 !weights/.gitkeep
 
 # Generated Benchmark Files
